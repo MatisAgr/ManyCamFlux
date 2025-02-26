@@ -2,6 +2,8 @@
 
 ManyCamFlux is a tiny project designed to manage multiple webcam feeds using a single Python file. It provides a simple interface to view, control, and capture screenshots from multiple cameras simultaneously.
 
+![screen](https://github.com/user-attachments/assets/65cdcf14-3797-47e3-b4d5-0242d7de8c7e)
+
 ## Features
 
 - **Single File Implementation**: The entire project is contained within a single Python file (`ManyCamFlux.py`).
