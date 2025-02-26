@@ -121,7 +121,7 @@ class ScreenshotDialog(QDialog):
         self.screenshot_timer.timeout.connect(self.take_screenshot)
 
         # Set default save folder
-        default_save_folder = os.path.join(os.path.expanduser("~"), "Pictures", "camFlux_images")
+        default_save_folder = os.path.join(os.path.expanduser("~"), "Pictures", "ManyCamFlux_images")
         self.save_folder_edit.setText(default_save_folder)
 
     def choose_save_folder(self):
@@ -386,7 +386,7 @@ class CamFluxWidget(QWidget):
                 "rotation_angle": widget.rotation_angle,
                 "visible": self.visible_flags[idx]
             })
-        config_path = os.path.join(os.path.dirname(__file__), "camFlux_config.json")
+        config_path = os.path.join(os.path.dirname(__file__), "ManyCamFlux_config.json")
         with open(config_path, 'w') as config_file:
             json.dump(config, config_file, indent=4)
         QMessageBox.information(self, "Configuration", "Configuration saved")
@@ -406,7 +406,7 @@ class CamFluxWidget(QWidget):
             QMessageBox.information(self, "Configuration", "Configuration loaded")
 
     def load_config_at_startup(self):
-        config_path = os.path.join(os.path.dirname(__file__), "camFlux_config.json")
+        config_path = os.path.join(os.path.dirname(__file__), "ManyCamFlux_config.json")
         if os.path.exists(config_path):
             with open(config_path, 'r') as config_file:
                 config = json.load(config_file)
