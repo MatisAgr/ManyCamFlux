@@ -49,6 +49,7 @@ pip install -r requirements.txt
 
 - Ensure that your cameras are properly connected and recognized by your operating system.
 - The default save folder for screenshots is `~/Pictures/ManyCamFlux_images`.
+- Cameras are adjusted to the size of the window, so they don't distort when captured.
 
 ## Build with PyInstaller
 
@@ -72,3 +73,5 @@ If PyInstaller is not recognized after installation, try this command:
 ```sh
 python -m PyInstaller --onefile --windowed ManyCamFlux.py
 ```
+
+*Further updates and adjustments will follow.*
