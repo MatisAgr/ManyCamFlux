@@ -3,3 +3,6 @@
 ManyCamFlux.spec
 ManyCamFlux.json
 __pycache__
+
+/prod
+/dev
