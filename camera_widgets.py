@@ -211,7 +211,8 @@ class CamFluxWidget(QWidget):
         
         self.keep_aspect_ratio = keep_aspect_ratio
         print_info(f"Keep aspect ratio: {keep_aspect_ratio}")
-
+        
+        self.show_labels_in_screenshots = True
         
         self.resize_timer = QTimer()
         self.resize_timer.setSingleShot(True)
@@ -372,7 +373,7 @@ class CamFluxWidget(QWidget):
             return
         
         container_width = self.flux_container.width()
-        min_camera_width = 250
+        min_camera_width = 500
         
         max_columns = max(1, container_width // min_camera_width)
         
@@ -455,17 +456,37 @@ class CamFluxWidget(QWidget):
                 frame = widget.apply_brightness_contrast(frame)
                 frame = widget.apply_saturation(frame)
                 
-                frame = cv2.resize(frame, (w, h))
+                if self.show_labels_in_screenshots:
+                    text_bar = np.zeros((30, frame.shape[1], 3), dtype=np.uint8)
+                    frame = np.vstack([frame, text_bar])
+                    
+                    frame = cv2.resize(frame, (w, h))
+                    
+                    cv2.putText(
+                        frame, 
+                        widget.name, 
+                        (10, h - 10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 
+                        0.7, 
+                        (255, 255, 255), 
+                        2
+                    )
+                else:
+                    frame = cv2.resize(frame, (w, h))
                 
                 row = idx // cols
                 col = idx % cols
                 screenshot[row*h:(row+1)*h, col*w:(col+1)*w] = frame
     
         cv2.imwrite(filename, screenshot)
+        print_success(f"Screenshot saved to {filename}")
 
     def save_config(self):
-        
         config = {
+            "global_settings": {
+                "show_labels_in_screenshots": self.show_labels_in_screenshots,
+                "keep_aspect_ratio": self.keep_aspect_ratio
+            },
             "cameras": []
         }
         for idx, widget in enumerate(self.cam_widgets):
@@ -511,7 +532,6 @@ class CamFluxWidget(QWidget):
                     self.cam_widgets[idx].name = cam_config["name"]
                     self.cam_widgets[idx].brightness = cam_config["brightness"]
                     self.cam_widgets[idx].contrast = cam_config["contrast"]
-                    # Récupérer la saturation si elle existe dans le fichier de config
                     if "saturation" in cam_config:
                         self.cam_widgets[idx].saturation = cam_config["saturation"]
                     self.cam_widgets[idx].rotation_angle = cam_config["rotation_angle"]
@@ -527,15 +547,25 @@ class CamFluxWidget(QWidget):
     def load_config_at_startup(self):
         config_path = os.path.join(os.path.dirname(__file__), "ManyCamFlux_config.json")
         if os.path.exists(config_path):
-            with open(config_path, 'r') as config_file:
-                config = json.load(config_file)
-                for idx, cam_config in enumerate(config["cameras"]):
-                    self.cam_widgets[idx].name = cam_config["name"]
-                    self.cam_widgets[idx].brightness = cam_config["brightness"]
-                    self.cam_widgets[idx].contrast = cam_config["contrast"]
-                    # Récupérer la saturation si elle existe dans le fichier de config
-                    if "saturation" in cam_config:
-                        self.cam_widgets[idx].saturation = cam_config["saturation"]
-                    self.cam_widgets[idx].rotation_angle = cam_config["rotation_angle"]
-                    self.visible_flags[idx] = cam_config["visible"]
-                self.update_grid_layout()
+            try:
+                with open(config_path, 'r') as config_file:
+                    config = json.load(config_file)
+                    
+                    if "global_settings" in config:
+                        if "show_labels_in_screenshots" in config["global_settings"]:
+                            self.show_labels_in_screenshots = config["global_settings"]["show_labels_in_screenshots"]
+                            print_debug(f"Loaded show_labels_in_screenshots: {self.show_labels_in_screenshots}")
+                    
+                    for idx, cam_config in enumerate(config["cameras"]):
+                        if idx < len(self.cam_widgets):
+                            self.cam_widgets[idx].name = cam_config["name"]
+                            self.cam_widgets[idx].brightness = cam_config["brightness"]
+                            self.cam_widgets[idx].contrast = cam_config["contrast"]
+                            if "saturation" in cam_config:
+                                self.cam_widgets[idx].saturation = cam_config["saturation"]
+                            self.cam_widgets[idx].rotation_angle = cam_config["rotation_angle"]
+                            self.visible_flags[idx] = cam_config["visible"]
+                    self.update_grid_layout()
+                    print_success("Configuration loaded successfully")
+            except Exception as e:
+                print_error(f"Failed to load configuration: {str(e)}")

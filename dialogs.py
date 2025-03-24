@@ -169,6 +169,12 @@ class ScreenshotDialog(QDialog):
         self.interval_edit.setText("5")  # Default value
         self.layout.addWidget(self.interval_label)
         self.layout.addWidget(self.interval_edit)
+        
+        # Checkbox for showing labels in screenshots
+        self.show_labels_cb = QCheckBox("Show camera labels in screenshots")
+        self.show_labels_cb.setChecked(parent.show_labels_in_screenshots)
+        self.show_labels_cb.stateChanged.connect(self.toggle_labels)
+        self.layout.addWidget(self.show_labels_cb)
 
         # Start/Stop buttons
         button_layout = QHBoxLayout()
@@ -188,6 +194,10 @@ class ScreenshotDialog(QDialog):
         default_save_folder = os.path.join(os.path.expanduser("~"), "Pictures", "ManyCamFlux_images")
         self.save_folder_edit.setText(default_save_folder)
         print_debug(f"Default save folder set to: {default_save_folder}")
+    
+    def toggle_labels(self, state):
+        self.parent_widget.show_labels_in_screenshots = (state == Qt.Checked)
+        print_debug(f"Show labels in screenshots: {self.parent_widget.show_labels_in_screenshots}")
 
     def choose_save_folder(self):
         print_debug("User is selecting a save folder")
