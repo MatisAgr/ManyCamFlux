@@ -3,7 +3,7 @@ import subprocess
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                             QLineEdit, QPushButton, QGroupBox, QCheckBox, 
                             QSlider, QDialogButtonBox, QFileDialog, QMessageBox,
-                            QComboBox, QSpinBox, QWidget)
+                            QComboBox, QSpinBox, QWidget, QTabWidget)
 from PyQt5.QtCore import Qt, QTimer, QDateTime
 
 class SliderWithValue(QWidget):
@@ -53,23 +53,20 @@ class GlobalControlDialog(QDialog):
         self.layout = QVBoxLayout()
         self.parent_widget = parent
 
-        # Pour chaque caméra, créer un groupe de contrôles
+        # Création d'un widget d'onglets
+        self.tab_widget = QTabWidget()
+        
+        # Pour chaque caméra, créer un onglet
         for idx in range(parent.num_cam):
-            group = QGroupBox(f"Camera {idx}")
-            group_layout = QVBoxLayout()
+            # Créer un widget pour contenir les contrôles de cette caméra
+            camera_widget = QWidget()
+            group_layout = QVBoxLayout(camera_widget)
 
             # Nom de la caméra
             name_edit = QLineEdit(parent.cam_widgets[idx].name)
             name_edit.textChanged.connect(lambda text, i=idx: parent.set_camera_name(i, text))
             group_layout.addWidget(QLabel("Name"))
             group_layout.addWidget(name_edit)
-
-            # Menu déroulant pour les options de caméra
-            cam_options = QComboBox()
-            cam_options.addItems(["Mode normal", "Mode nuit", "Mode haute résolution"])
-            cam_options.setCurrentIndex(0)  # Par défaut: mode normal
-            group_layout.addWidget(QLabel("Mode de caméra"))
-            group_layout.addWidget(cam_options)
 
             # Case à cocher pour la visibilité
             vis_cb = QCheckBox("Visible")
@@ -112,16 +109,24 @@ class GlobalControlDialog(QDialog):
             group_layout.addWidget(QLabel("Rotation"))
             group_layout.addLayout(rotate_layout)
 
-            group.setLayout(group_layout)
-            self.layout.addWidget(group)
+            # Ajouter un espace élastique à la fin pour éviter l'étirement
+            group_layout.addStretch(1)
+            
+            # Ajouter l'onglet avec le nom de la caméra
+            self.tab_widget.addTab(camera_widget, f"Camera {idx}")
+
+        # Ajouter le widget d'onglets au layout principal
+        self.layout.addWidget(self.tab_widget)
 
         # Boutons pour sauvegarder et charger les configurations
+        button_layout = QHBoxLayout()
         save_button = QPushButton("Save")
         save_button.clicked.connect(parent.save_config)
         import_button = QPushButton("Import")
         import_button.clicked.connect(parent.load_config)
-        self.layout.addWidget(save_button)
-        self.layout.addWidget(import_button)
+        button_layout.addWidget(save_button)
+        button_layout.addWidget(import_button)
+        self.layout.addLayout(button_layout)
 
         # Boutons standard de dialogue
         buttons = QDialogButtonBox(QDialogButtonBox.Ok)
