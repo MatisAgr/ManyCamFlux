@@ -66,6 +66,10 @@ To build your modifications of ManyCamFlux project into a standalone executable 
     ```sh
     pyinstaller --onefile --windowed ManyCamFlux.py
     ```
+    or for debug :
+    ```sh
+    pyinstaller --onefile ManyCamFlux.py
+    ```
 
 3. **Run the executable**:
     - After the compilation, the executable `(ManyCamFlux.exe)` will be located in the `dist` directory. You can run it directly from there.
