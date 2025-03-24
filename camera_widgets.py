@@ -6,7 +6,7 @@ import subprocess
 from PyQt5.QtWidgets import (QLabel, QWidget, QGridLayout, QVBoxLayout, 
                             QHBoxLayout, QPushButton, QMessageBox, QFileDialog,
                             QMenu, QAction, QSizePolicy)
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QDateTime
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QCursor
 
 class CamFeedWidget(QLabel):
