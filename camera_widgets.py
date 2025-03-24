@@ -24,10 +24,13 @@ class CamFeedWidget(QLabel):
         
         self.original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.aspect_ratio = self.original_width / self.original_height
         
         self.setMouseTracking(True)
         
-        self.setScaledContents(True)
+        self.setScaledContents(False)
+        self.setAlignment(Qt.AlignCenter)
+        
         self.fullscreen_mode = False
         self.parent_widget = parent
         self.setStyleSheet("background-color: lightblue;")
@@ -39,6 +42,10 @@ class CamFeedWidget(QLabel):
         self.customContextMenuRequested.connect(self.show_context_menu)
         
         self.setMinimumSize(160, 120)
+        
+        self.original_pixmap = None
+        self.scaled_pixmap = None
+
 
     def show_context_menu(self, position):
         menu = QMenu(self)
@@ -92,13 +99,54 @@ class CamFeedWidget(QLabel):
             frame = np.zeros((self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT), self.cap.get(cv2.CAP_PROP_FRAME_WIDTH), 3), dtype=np.uint8)
         frame = self.apply_rotation(frame)
         frame = self.apply_brightness_contrast(frame)
-        frame = self.apply_saturation(frame)  # Appliquer la saturation
+        frame = self.apply_saturation(frame)
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = frame.shape
         bytes_per_line = ch * w
         qimg = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        self.setPixmap(QPixmap.fromImage(qimg))
+        
+        self.original_pixmap = QPixmap.fromImage(qimg)
+        self.updateScaledPixmap()
+        
+    def updateScaledPixmap(self):
+        if self.original_pixmap is None:
+            return
+            
+        label_size = self.size()
+        w, h = label_size.width(), label_size.height()
+        
+        if w == 0 or h == 0:
+            return
+            
+        if self.parent_widget.keep_aspect_ratio:
+            pixmap_ratio = self.original_pixmap.width() / self.original_pixmap.height()
+            
+            if w / h > pixmap_ratio:
+                new_width = int(h * pixmap_ratio)
+                new_height = h
+            else:
+                new_width = w
+                new_height = int(w / pixmap_ratio)
+            
+            self.scaled_pixmap = self.original_pixmap.scaled(
+                new_width, new_height, 
+                Qt.KeepAspectRatio, 
+                Qt.SmoothTransformation
+            )
+        else:
+            self.scaled_pixmap = self.original_pixmap.scaled(
+                w, h,
+                Qt.IgnoreAspectRatio,
+                Qt.SmoothTransformation
+            )
+        
+        self.setPixmap(self.scaled_pixmap)
+        
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.updateScaledPixmap()
 
+        
     def apply_rotation(self, frame):
         if self.rotation_angle == 90:
             frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
@@ -128,12 +176,25 @@ class CamFeedWidget(QLabel):
         return frame
 
     def paintEvent(self, event):
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setPen(QColor(255, 255, 255))
-        painter.setBrush(QColor(0, 0, 0))
-        painter.drawRect(0, self.height() - 30, self.width(), 30)
-        painter.drawText(10, self.height() - 10, self.name)
+        if self.scaled_pixmap:
+            painter = QPainter(self)
+            
+            if self.parent_widget.keep_aspect_ratio:
+                x = (self.width() - self.scaled_pixmap.width()) // 2
+                y = (self.height() - self.scaled_pixmap.height()) // 2
+                
+                painter.drawPixmap(x, y, self.scaled_pixmap)
+            else:
+                painter.drawPixmap(0, 0, self.width(), self.height(), self.scaled_pixmap)
+            
+            painter.setPen(QColor(255, 255, 255))
+            painter.setBrush(QColor(0, 0, 0, 180))  # Fond semi-transparent
+            painter.drawRect(0, self.height() - 30, self.width(), 30)
+            painter.drawText(10, self.height() - 10, self.name)
+            
+            painter.end()
+        else:
+            super().paintEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         # On double-click, toggle fullscreen mode
@@ -144,10 +205,18 @@ class CamFeedWidget(QLabel):
                 self.parent_widget.exit_fullscreen()
 
 class CamFluxWidget(QWidget):
-    def __init__(self, resolution=(640, 480)):
+    def __init__(self, resolution=(640, 480), keep_aspect_ratio=False):
         super().__init__()
         self.setWindowTitle("ManyCamFlux")
         
+        self.keep_aspect_ratio = keep_aspect_ratio
+        print_info(f"Keep aspect ratio: {keep_aspect_ratio}")
+
+        
+        self.resize_timer = QTimer()
+        self.resize_timer.setSingleShot(True)
+        self.resize_timer.timeout.connect(self.update_grid_layout)
+
         self.selected_resolution = resolution
 
         self.GlobalControlDialog = GlobalControlDialog
@@ -295,16 +364,32 @@ class CamFluxWidget(QWidget):
             item = self.flux_layout.takeAt(0)
             if item.widget():
                 self.flux_layout.removeWidget(item.widget())
+        
         # Get visible widgets
         visible_widgets = [w for idx, w in enumerate(self.cam_widgets) if self.visible_flags[idx]]
         n = len(visible_widgets)
         if n == 0:
             return
-        grid_size = int(np.ceil(np.sqrt(n)))
+        
+        container_width = self.flux_container.width()
+        min_camera_width = 250
+        
+        max_columns = max(1, container_width // min_camera_width)
+        
+        rows = (n + max_columns - 1) // max_columns
+        cols = min(n, max_columns)
+        
+        print_debug(f"Responsive layout: {rows} rows, {cols} columns for {n} cameras")
+        
         for i, widget in enumerate(visible_widgets):
-            row = i // grid_size
-            col = i % grid_size
+            row = i // cols
+            col = i % cols
             self.flux_layout.addWidget(widget, row, col)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_grid_layout()
+        self.resize_timer.start(200)
 
     def show_fullscreen(self, widget):
         widget.fullscreen_mode = True
