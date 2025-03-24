@@ -305,8 +305,19 @@ class CamFluxWidget(QWidget):
             self.exit_fullscreen()
 
     def closeEvent(self, event):
+        self.timer.stop()
+        
+        import time
+        time.sleep(0.1)
+        
         for cap in self.caps:
-            cap.release()
+            if cap.isOpened():
+                cap.release()
+        
+        for widget in self.cam_widgets:
+            widget.setParent(None)
+        self.cam_widgets.clear()
+        
         event.accept()
 
     def take_screenshot(self, filename):
