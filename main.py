@@ -1,6 +1,8 @@
 import sys
 from PyQt5.QtWidgets import (QApplication, QDialog, QVBoxLayout, QLabel, 
-                           QComboBox, QDialogButtonBox)
+                           QComboBox, QDialogButtonBox, QSplashScreen)
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPixmap, QFont
 
 from camera_widgets import CamFluxWidget
 
@@ -25,9 +27,24 @@ if __name__ == "__main__":
     if resolution_dialog.exec_() == QDialog.Accepted:
         resolution_text = resolution_combo.currentText()
         resolution = tuple(map(int, resolution_text.split('x')))
+        
+        splash_pix = QPixmap(400, 200)
+        splash_pix.fill(Qt.lightGray)
+        splash = QSplashScreen(splash_pix)
+        
+        # Ajouter le texte "Loading cameras..."
+        font = QFont("Arial", 16, QFont.Bold)
+        splash.setFont(font)
+        splash.showMessage("Loading cameras...", Qt.AlignCenter, Qt.black)
+        
+        splash.show()
+        app.processEvents()
+        
+        widget = CamFluxWidget(resolution)
+        
+        splash.finish(widget)
+        widget.show()
     else:
         sys.exit()
 
-    widget = CamFluxWidget(resolution)
-    widget.show()
     sys.exit(app.exec_())
