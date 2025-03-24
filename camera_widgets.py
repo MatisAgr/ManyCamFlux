@@ -16,21 +16,26 @@ class CamFeedWidget(QLabel):
         self.rotation_angle = 0
         self.brightness = 0
         self.contrast = 0
-        self.saturation = 0  # Nouvelle propriété pour la saturation
+        self.saturation = 0
         self.name = name
+        
+        self.original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
         self.setMouseTracking(True)
+        
         self.setScaledContents(True)
         self.fullscreen_mode = False
         self.parent_widget = parent
         self.setStyleSheet("background-color: lightblue;")
         self.setFont(QFont("Arial", 14, QFont.Bold))
         
-        # Permettre le redimensionnement libre
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
-        # Menu contextuel pour les options de caméra
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
+        
+        self.setMinimumSize(160, 120)
 
     def show_context_menu(self, position):
         menu = QMenu(self)
@@ -139,11 +144,13 @@ class CamFluxWidget(QWidget):
     def __init__(self, resolution=(640, 480)):
         super().__init__()
         self.setWindowTitle("ManyCamFlux")
+        
+        # Stocker la résolution sélectionnée
+        self.selected_resolution = resolution
 
         # Import is done here to avoid circular imports
         from utils import get_available_cameras
         from dialogs import GlobalControlDialog, ScreenshotDialog
-        from PyQt5.QtCore import QDateTime  # Ajout pour l'horodatage des snapshots
         self.GlobalControlDialog = GlobalControlDialog
         self.ScreenshotDialog = ScreenshotDialog
 
@@ -157,7 +164,7 @@ class CamFluxWidget(QWidget):
         self.num_cam = len(self.cam_indices)
         self.caps = [cv2.VideoCapture(idx) for idx in self.cam_indices]
 
-        # Set camera resolution
+        # Set camera resolution for capture (not display)
         for cap in self.caps:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
@@ -166,14 +173,16 @@ class CamFluxWidget(QWidget):
         self.cam_widgets = [CamFeedWidget(cap, self, f"Camera {idx}") for idx, cap in enumerate(self.caps)]
         self.visible_flags = [True] * self.num_cam
 
-        # Layout for feeds
+        # Layout for feeds with stretch factors to permettre le redimensionnement
         self.flux_layout = QGridLayout()
-        self.flux_layout.setSpacing(5)  # Espacement entre les caméras
-
-        main_layout = QVBoxLayout()
+        self.flux_layout.setSpacing(5)
+        
+        # Important: permettre que le layout s'étire
         self.flux_container = QWidget()
         self.flux_container.setLayout(self.flux_layout)
-        main_layout.addWidget(self.flux_container)
+        
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(self.flux_container, 1)
 
         # Settings and Capture buttons side by side
         button_layout = QHBoxLayout()
@@ -185,7 +194,6 @@ class CamFluxWidget(QWidget):
         self.screenshot_button.clicked.connect(self.show_screenshot_dialog)
         button_layout.addWidget(self.screenshot_button)
         
-        # Bouton pour prendre un snapshot unique de toutes les caméras
         self.snapshot_button = QPushButton("Snapshot")
         self.snapshot_button.clicked.connect(self.take_snapshot_all)
         button_layout.addWidget(self.snapshot_button)
@@ -199,6 +207,10 @@ class CamFluxWidget(QWidget):
         main_layout.addWidget(self.back_button)
 
         self.setLayout(main_layout)
+        
+        # Définir une taille de fenêtre par défaut généreuse
+        self.resize(1024, 768)
+        
         self.update_grid_layout()
 
         # Timer to refresh display
@@ -326,29 +338,30 @@ class CamFluxWidget(QWidget):
         n = len(visible_widgets)
         if n == 0:
             return
-
+    
         # Calculate grid size
         grid_size = int(np.ceil(np.sqrt(n)))
         rows = (n + grid_size - 1) // grid_size
         cols = min(n, grid_size)
-
-        # Get the size of a single camera
-        h, w, _ = visible_widgets[0].cap.read()[1].shape
-
+    
+        h, w = self.selected_resolution[1], self.selected_resolution[0]
+    
         # Create an empty image to hold all visible cameras
         screenshot = np.zeros((rows * h, cols * w, 3), dtype=np.uint8)
-
+    
         for idx, widget in enumerate(visible_widgets):
             ret, frame = widget.cap.read()
             if ret:
                 frame = widget.apply_rotation(frame)
                 frame = widget.apply_brightness_contrast(frame)
-                frame = widget.apply_saturation(frame)  # Appliquer la saturation
-                frame = cv2.resize(frame, (w, h))  # Resize the image to match the target size
+                frame = widget.apply_saturation(frame)
+                
+                frame = cv2.resize(frame, (w, h))
+                
                 row = idx // cols
                 col = idx % cols
                 screenshot[row*h:(row+1)*h, col*w:(col+1)*w] = frame
-
+    
         cv2.imwrite(filename, screenshot)
 
     def save_config(self):
