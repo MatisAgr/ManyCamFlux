@@ -9,6 +9,9 @@ from PyQt5.QtWidgets import (QLabel, QWidget, QGridLayout, QVBoxLayout,
 from PyQt5.QtCore import Qt, QTimer, QDateTime
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QCursor
 
+from utils import get_available_cameras, print_info, print_debug, print_error, print_success, print_warning
+from dialogs import GlobalControlDialog, ScreenshotDialog
+
 class CamFeedWidget(QLabel):
     def __init__(self, cap, parent=None, name=""):
         super().__init__(parent)
@@ -145,29 +148,32 @@ class CamFluxWidget(QWidget):
         super().__init__()
         self.setWindowTitle("ManyCamFlux")
         
-        # Stocker la résolution sélectionnée
         self.selected_resolution = resolution
 
-        # Import is done here to avoid circular imports
-        from utils import get_available_cameras
-        from dialogs import GlobalControlDialog, ScreenshotDialog
         self.GlobalControlDialog = GlobalControlDialog
         self.ScreenshotDialog = ScreenshotDialog
+        
+        print_info(f"Initializing ManyCamFlux with resolution {resolution}")
 
         # Detect available cameras
+        print_debug("Scanning for available cameras...")
         self.cam_indices = get_available_cameras()
         if not self.cam_indices:
-            print("No cameras detected.")
+            print_error("No cameras detected. Application will exit.")
             import sys
             sys.exit()
+        else:
+            print_success(f"Found {len(self.cam_indices)} camera(s): {self.cam_indices}")
 
         self.num_cam = len(self.cam_indices)
         self.caps = [cv2.VideoCapture(idx) for idx in self.cam_indices]
+        print_debug("Camera capture devices initialized")
 
         # Set camera resolution for capture (not display)
-        for cap in self.caps:
+        for idx, cap in enumerate(self.caps):
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
+            print_debug(f"Camera {idx} resolution set to {resolution[0]}x{resolution[1]}")
 
         # Create a widget for each camera
         self.cam_widgets = [CamFeedWidget(cap, self, f"Camera {idx}") for idx, cap in enumerate(self.caps)]
@@ -177,7 +183,6 @@ class CamFluxWidget(QWidget):
         self.flux_layout = QGridLayout()
         self.flux_layout.setSpacing(5)
         
-        # Important: permettre que le layout s'étire
         self.flux_container = QWidget()
         self.flux_container.setLayout(self.flux_layout)
         
@@ -222,25 +227,24 @@ class CamFluxWidget(QWidget):
         self.load_config_at_startup()
     
     def take_snapshot_all(self):
-        # Créer un dossier de snapshots s'il n'existe pas
+        
         snapshot_folder = os.path.join(os.path.expanduser("~"), "Pictures", "ManyCamFlux_snapshots")
         if not os.path.exists(snapshot_folder):
             os.makedirs(snapshot_folder)
+            print_debug(f"Created snapshot directory: {snapshot_folder}")
         
-        # Générer un nom de fichier avec horodatage
-        from PyQt5.QtCore import QDateTime
         timestamp = QDateTime.currentDateTime().toString("yyyyMMdd_hhmmss")
         filename = os.path.join(snapshot_folder, f"snapshot_all_{timestamp}.jpg")
+        print_info(f"Taking snapshot of all cameras to {filename}")
         
-        # Utiliser la fonction existante
         self.take_screenshot(filename)
         
-        # Notifier l'utilisateur
+        print_success(f"Snapshot saved: {filename}")
         QMessageBox.information(self, "Snapshot", f"Snapshot de toutes les caméras sauvegardé:\n{filename}")
         
-        # Ouvrir le dossier
         if os.path.exists(snapshot_folder):
             if os.name == 'nt':  # Windows
+                print_debug(f"Opening folder in explorer: {snapshot_folder}")
                 subprocess.Popen(['explorer', snapshot_folder])
 
     def show_global_params(self):
@@ -252,21 +256,28 @@ class CamFluxWidget(QWidget):
         dialog.exec_()
 
     def set_camera_name(self, idx, name):
+        old_name = self.cam_widgets[idx].name
         self.cam_widgets[idx].name = name
+        print_debug(f"Camera {idx} renamed: '{old_name}' -> '{name}'")
         self.update_grid_layout()
 
     def set_brightness(self, idx, value):
         self.cam_widgets[idx].brightness = value
+        print_debug(f"Camera {idx} brightness set to {value}")
 
     def set_contrast(self, idx, value):
         self.cam_widgets[idx].contrast = value
+        print_debug(f"Camera {idx} contrast set to {value}")
         
     def set_saturation(self, idx, value):
         self.cam_widgets[idx].saturation = value
+        print_debug(f"Camera {idx} saturation set to {value}")
 
     def rotate_camera(self, idx, angle):
-        self.cam_widgets[idx].rotation_angle = (self.cam_widgets[idx].rotation_angle + angle) % 360
-
+        old_angle = self.cam_widgets[idx].rotation_angle
+        self.cam_widgets[idx].rotation_angle = (old_angle + angle) % 360
+        print_debug(f"Camera {idx} rotated: {old_angle}° -> {self.cam_widgets[idx].rotation_angle}°")
+        
     def update_frames(self):
         for idx, widget in enumerate(self.cam_widgets):
             if self.visible_flags[idx]:
@@ -276,6 +287,7 @@ class CamFluxWidget(QWidget):
         self.visible_flags[idx] = (state == Qt.Checked)
         self.cam_widgets[idx].setVisible(self.visible_flags[idx])
         self.update_grid_layout()
+        print_debug(f"Camera {idx} visibility set to {self.visible_flags[idx]}")
 
     def update_grid_layout(self):
         # Clear current layout
@@ -303,6 +315,7 @@ class CamFluxWidget(QWidget):
                 w.hide()
         self.showFullScreen()
         self.update_grid_layout()
+        print_debug(f"Entering fullscreen mode for {widget.name}")
 
     def exit_fullscreen(self):
         self.back_button.setVisible(False)
@@ -311,6 +324,7 @@ class CamFluxWidget(QWidget):
             widget.fullscreen_mode = False
             widget.show()
         self.update_grid_layout()
+        print_debug("Exiting fullscreen mode")
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -365,6 +379,7 @@ class CamFluxWidget(QWidget):
         cv2.imwrite(filename, screenshot)
 
     def save_config(self):
+        
         config = {
             "cameras": []
         }
@@ -373,21 +388,41 @@ class CamFluxWidget(QWidget):
                 "name": widget.name,
                 "brightness": widget.brightness,
                 "contrast": widget.contrast,
-                "saturation": widget.saturation,  # Sauvegarde de la saturation
+                "saturation": widget.saturation,
                 "rotation_angle": widget.rotation_angle,
                 "visible": self.visible_flags[idx]
             })
+        
         config_path = os.path.join(os.path.dirname(__file__), "ManyCamFlux_config.json")
-        with open(config_path, 'w') as config_file:
-            json.dump(config, config_file, indent=4)
-        QMessageBox.information(self, "Configuration", "Configuration saved")
+        print_info(f"Saving configuration to {config_path}")
+        
+        try:
+            with open(config_path, 'w') as config_file:
+                json.dump(config, config_file, indent=4)
+            print_success("Configuration saved successfully")
+            QMessageBox.information(self, "Configuration", "Configuration saved")
+        except Exception as e:
+            print_error(f"Failed to save configuration: {str(e)}")
+            QMessageBox.warning(self, "Error", f"Failed to save configuration: {str(e)}")
 
     def load_config(self):
+        
         config_path, _ = QFileDialog.getOpenFileName(self, "Open Configuration File", "", "JSON Files (*.json)")
-        if config_path:
+        if not config_path:
+            print_debug("Configuration loading cancelled by user")
+            return
+            
+        print_info(f"Loading configuration from {config_path}")
+        
+        try:
             with open(config_path, 'r') as config_file:
                 config = json.load(config_file)
                 for idx, cam_config in enumerate(config["cameras"]):
+                    if idx >= len(self.cam_widgets):
+                        print_warning(f"Config has more cameras ({len(config['cameras'])}) than available ({len(self.cam_widgets)})")
+                        break
+                        
+                    print_debug(f"Applying config to camera {idx}")
                     self.cam_widgets[idx].name = cam_config["name"]
                     self.cam_widgets[idx].brightness = cam_config["brightness"]
                     self.cam_widgets[idx].contrast = cam_config["contrast"]
@@ -396,8 +431,13 @@ class CamFluxWidget(QWidget):
                         self.cam_widgets[idx].saturation = cam_config["saturation"]
                     self.cam_widgets[idx].rotation_angle = cam_config["rotation_angle"]
                     self.visible_flags[idx] = cam_config["visible"]
+                
                 self.update_grid_layout()
-            QMessageBox.information(self, "Configuration", "Configuration loaded")
+                print_success("Configuration loaded successfully")
+                QMessageBox.information(self, "Configuration", "Configuration loaded")
+        except Exception as e:
+            print_error(f"Failed to load configuration: {str(e)}")
+            QMessageBox.warning(self, "Error", f"Failed to load configuration: {str(e)}")
 
     def load_config_at_startup(self):
         config_path = os.path.join(os.path.dirname(__file__), "ManyCamFlux_config.json")
