@@ -2,8 +2,49 @@ import os
 import subprocess
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                             QLineEdit, QPushButton, QGroupBox, QCheckBox, 
-                            QSlider, QDialogButtonBox, QFileDialog, QMessageBox)
+                            QSlider, QDialogButtonBox, QFileDialog, QMessageBox,
+                            QComboBox, QSpinBox, QWidget)
 from PyQt5.QtCore import Qt, QTimer, QDateTime
+
+class SliderWithValue(QWidget):
+    """Widget personnalisé qui combine un slider et une valeur numérique"""
+    def __init__(self, orientation=Qt.Horizontal, parent=None):
+        super().__init__(parent)
+        self.layout = QHBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Créer le slider
+        self.slider = QSlider(orientation)
+        self.slider.setTickPosition(QSlider.TicksBelow)
+        self.slider.setTickInterval(25)  # Moins de crans
+        
+        # Créer l'affichage de la valeur
+        self.value_display = QSpinBox()
+        self.value_display.setButtonSymbols(QSpinBox.NoButtons)
+        self.value_display.setFixedWidth(50)
+        
+        # Connecter les signaux
+        self.slider.valueChanged.connect(self.value_display.setValue)
+        self.value_display.valueChanged.connect(self.slider.setValue)
+        
+        # Ajouter les widgets au layout
+        self.layout.addWidget(self.slider, 4)  # 80% de l'espace
+        self.layout.addWidget(self.value_display, 1)  # 20% de l'espace
+        
+        self.setLayout(self.layout)
+
+    def setRange(self, min_val, max_val):
+        self.slider.setRange(min_val, max_val)
+        self.value_display.setRange(min_val, max_val)
+        
+    def setValue(self, value):
+        self.slider.setValue(value)
+        
+    def value(self):
+        return self.slider.value()
+        
+    def valueChanged(self):
+        return self.slider.valueChanged
 
 class GlobalControlDialog(QDialog):
     def __init__(self, parent=None):
@@ -12,40 +53,55 @@ class GlobalControlDialog(QDialog):
         self.layout = QVBoxLayout()
         self.parent_widget = parent
 
-        # For each camera, add a groupbox of controls
+        # Pour chaque caméra, créer un groupe de contrôles
         for idx in range(parent.num_cam):
             group = QGroupBox(f"Camera {idx}")
             group_layout = QVBoxLayout()
 
-            # Camera name
+            # Nom de la caméra
             name_edit = QLineEdit(parent.cam_widgets[idx].name)
             name_edit.textChanged.connect(lambda text, i=idx: parent.set_camera_name(i, text))
             group_layout.addWidget(QLabel("Name"))
             group_layout.addWidget(name_edit)
 
-            # Visibility checkbox
+            # Menu déroulant pour les options de caméra
+            cam_options = QComboBox()
+            cam_options.addItems(["Mode normal", "Mode nuit", "Mode haute résolution"])
+            cam_options.setCurrentIndex(0)  # Par défaut: mode normal
+            group_layout.addWidget(QLabel("Mode de caméra"))
+            group_layout.addWidget(cam_options)
+
+            # Case à cocher pour la visibilité
             vis_cb = QCheckBox("Visible")
             vis_cb.setChecked(parent.visible_flags[idx])
             vis_cb.stateChanged.connect(lambda state, i=idx: parent.toggle_camera(i, state))
             group_layout.addWidget(vis_cb)
 
-            # Brightness slider
-            brightness_slider = QSlider(Qt.Horizontal)
-            brightness_slider.setRange(-100, 100)
+            # Slider de luminosité avec valeur
+            brightness_slider = SliderWithValue(Qt.Horizontal)
+            brightness_slider.setRange(-50, 50)  # Réduire l'échelle
             brightness_slider.setValue(parent.cam_widgets[idx].brightness)
-            brightness_slider.valueChanged.connect(lambda value, i=idx: parent.set_brightness(i, value))
+            brightness_slider.slider.valueChanged.connect(lambda value, i=idx: parent.set_brightness(i, value))
             group_layout.addWidget(QLabel("Brightness"))
             group_layout.addWidget(brightness_slider)
 
-            # Contrast slider
-            contrast_slider = QSlider(Qt.Horizontal)
-            contrast_slider.setRange(-100, 100)
+            # Slider de contraste avec valeur
+            contrast_slider = SliderWithValue(Qt.Horizontal)
+            contrast_slider.setRange(-50, 50)  # Réduire l'échelle
             contrast_slider.setValue(parent.cam_widgets[idx].contrast)
-            contrast_slider.valueChanged.connect(lambda value, i=idx: parent.set_contrast(i, value))
+            contrast_slider.slider.valueChanged.connect(lambda value, i=idx: parent.set_contrast(i, value))
             group_layout.addWidget(QLabel("Contrast"))
             group_layout.addWidget(contrast_slider)
+            
+            # Slider de saturation avec valeur
+            saturation_slider = SliderWithValue(Qt.Horizontal)
+            saturation_slider.setRange(-50, 50)  # Échelle réduite
+            saturation_slider.setValue(getattr(parent.cam_widgets[idx], 'saturation', 0))
+            saturation_slider.slider.valueChanged.connect(lambda value, i=idx: parent.set_saturation(i, value))
+            group_layout.addWidget(QLabel("Saturation"))
+            group_layout.addWidget(saturation_slider)
 
-            # Rotation buttons
+            # Boutons de rotation
             rotate_layout = QHBoxLayout()
             rotate_left = QPushButton("⟲")
             rotate_left.clicked.connect(lambda _, i=idx: parent.rotate_camera(i, -90))
@@ -59,7 +115,7 @@ class GlobalControlDialog(QDialog):
             group.setLayout(group_layout)
             self.layout.addWidget(group)
 
-        # Buttons to save and load configurations
+        # Boutons pour sauvegarder et charger les configurations
         save_button = QPushButton("Save")
         save_button.clicked.connect(parent.save_config)
         import_button = QPushButton("Import")
@@ -67,7 +123,7 @@ class GlobalControlDialog(QDialog):
         self.layout.addWidget(save_button)
         self.layout.addWidget(import_button)
 
-        # Standard dialog buttons
+        # Boutons standard de dialogue
         buttons = QDialogButtonBox(QDialogButtonBox.Ok)
         buttons.accepted.connect(self.accept)
         self.layout.addWidget(buttons)
@@ -80,7 +136,7 @@ class ScreenshotDialog(QDialog):
         self.layout = QVBoxLayout()
         self.parent_widget = parent
 
-        # Save folder selection
+        # Sélection du dossier de sauvegarde
         self.save_folder_label = QLabel("Save Folder:")
         self.save_folder_edit = QLineEdit()
         self.save_folder_button = QPushButton("Choose...")
@@ -89,25 +145,28 @@ class ScreenshotDialog(QDialog):
         self.layout.addWidget(self.save_folder_edit)
         self.layout.addWidget(self.save_folder_button)
 
-        # Screenshot interval
+        # Intervalle entre les captures d'écran
         self.interval_label = QLabel("Screenshot Interval (seconds):")
         self.interval_edit = QLineEdit()
+        self.interval_edit.setText("5")  # Valeur par défaut
         self.layout.addWidget(self.interval_label)
         self.layout.addWidget(self.interval_edit)
 
-        # Start/Stop buttons
+        # Boutons Start/Stop
+        button_layout = QHBoxLayout()
         self.start_button = QPushButton("Start")
         self.start_button.clicked.connect(self.start_screenshot)
         self.stop_button = QPushButton("Stop")
         self.stop_button.clicked.connect(self.stop_screenshot)
-        self.layout.addWidget(self.start_button)
-        self.layout.addWidget(self.stop_button)
+        button_layout.addWidget(self.start_button)
+        button_layout.addWidget(self.stop_button)
+        self.layout.addLayout(button_layout)
 
         self.setLayout(self.layout)
         self.screenshot_timer = QTimer()
         self.screenshot_timer.timeout.connect(self.take_screenshot)
 
-        # Set default save folder
+        # Définir le dossier de sauvegarde par défaut
         default_save_folder = os.path.join(os.path.expanduser("~"), "Pictures", "ManyCamFlux_images")
         self.save_folder_edit.setText(default_save_folder)
 
@@ -124,8 +183,13 @@ class ScreenshotDialog(QDialog):
         interval = int(interval_text) * 1000
         self.screenshot_timer.start(interval)
         save_folder = self.save_folder_edit.text()
+        if not os.path.exists(save_folder):
+            os.makedirs(save_folder)
         if os.path.exists(save_folder):
-            subprocess.Popen(['explorer', save_folder])
+            if os.name == 'nt':  # Windows
+                subprocess.Popen(['explorer', save_folder])
+            elif os.name == 'posix':  # macOS et Linux
+                subprocess.Popen(['open', save_folder])
         QMessageBox.information(self, "Screenshot", "Recording started")
 
     def stop_screenshot(self):

@@ -2,10 +2,12 @@ import cv2
 import numpy as np
 import os
 import json
+import subprocess
 from PyQt5.QtWidgets import (QLabel, QWidget, QGridLayout, QVBoxLayout, 
-                            QHBoxLayout, QPushButton, QMessageBox, QFileDialog)
+                            QHBoxLayout, QPushButton, QMessageBox, QFileDialog,
+                            QMenu, QAction, QSizePolicy)
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QCursor
 
 class CamFeedWidget(QLabel):
     def __init__(self, cap, parent=None, name=""):
@@ -14,6 +16,7 @@ class CamFeedWidget(QLabel):
         self.rotation_angle = 0
         self.brightness = 0
         self.contrast = 0
+        self.saturation = 0  # Nouvelle propriété pour la saturation
         self.name = name
         self.setMouseTracking(True)
         self.setScaledContents(True)
@@ -21,6 +24,59 @@ class CamFeedWidget(QLabel):
         self.parent_widget = parent
         self.setStyleSheet("background-color: lightblue;")
         self.setFont(QFont("Arial", 14, QFont.Bold))
+        
+        # Permettre le redimensionnement libre
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Menu contextuel pour les options de caméra
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.show_context_menu)
+
+    def show_context_menu(self, position):
+        menu = QMenu(self)
+        snapshot_action = QAction("Prendre un snapshot", self)
+        snapshot_action.triggered.connect(self.take_snapshot)
+        
+        rotate_left = QAction("Rotation ⟲", self)
+        rotate_left.triggered.connect(lambda: self.parent_widget.rotate_camera(
+            self.parent_widget.cam_widgets.index(self), -90))
+        
+        rotate_right = QAction("Rotation ⟳", self)
+        rotate_right.triggered.connect(lambda: self.parent_widget.rotate_camera(
+            self.parent_widget.cam_widgets.index(self), 90))
+        
+        fullscreen_action = QAction("Plein écran", self)
+        fullscreen_action.triggered.connect(lambda: self.parent_widget.show_fullscreen(self))
+        
+        menu.addAction(snapshot_action)
+        menu.addSeparator()
+        menu.addAction(rotate_left)
+        menu.addAction(rotate_right)
+        menu.addSeparator()
+        menu.addAction(fullscreen_action)
+        
+        menu.exec_(QCursor.pos())
+
+    def take_snapshot(self):
+        # Créer un dossier de snapshots s'il n'existe pas
+        snapshot_folder = os.path.join(os.path.expanduser("~"), "Pictures", "ManyCamFlux_snapshots")
+        if not os.path.exists(snapshot_folder):
+            os.makedirs(snapshot_folder)
+        
+        # Générer un nom de fichier avec horodatage
+        timestamp = QDateTime.currentDateTime().toString("yyyyMMdd_hhmmss")
+        filename = os.path.join(snapshot_folder, f"snapshot_{self.name}_{timestamp}.jpg")
+        
+        # Capturer l'image
+        ret, frame = self.cap.read()
+        if ret:
+            frame = self.apply_rotation(frame)
+            frame = self.apply_brightness_contrast(frame)
+            frame = self.apply_saturation(frame)  # Appliquer la saturation
+            cv2.imwrite(filename, frame)
+            
+            # Notifier l'utilisateur
+            QMessageBox.information(self, "Snapshot", f"Snapshot sauvegardé:\n{filename}")
 
     def update_frame(self):
         ret, frame = self.cap.read()
@@ -28,6 +84,7 @@ class CamFeedWidget(QLabel):
             frame = np.zeros((self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT), self.cap.get(cv2.CAP_PROP_FRAME_WIDTH), 3), dtype=np.uint8)
         frame = self.apply_rotation(frame)
         frame = self.apply_brightness_contrast(frame)
+        frame = self.apply_saturation(frame)  # Appliquer la saturation
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = frame.shape
         bytes_per_line = ch * w
@@ -45,6 +102,21 @@ class CamFeedWidget(QLabel):
 
     def apply_brightness_contrast(self, frame):
         frame = cv2.convertScaleAbs(frame, alpha=1 + self.contrast / 100, beta=self.brightness)
+        return frame
+    
+    def apply_saturation(self, frame):
+        # Convertir en HSV pour modifier la saturation
+        if self.saturation != 0:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype("float32")
+            (h, s, v) = cv2.split(hsv)
+            
+            # Ajuster la saturation
+            s = s * (1 + self.saturation / 100)
+            s = np.clip(s, 0, 255)
+            
+            # Fusionner les canaux et reconvertir en BGR
+            hsv = cv2.merge([h, s, v])
+            frame = cv2.cvtColor(hsv.astype("uint8"), cv2.COLOR_HSV2BGR)
         return frame
 
     def paintEvent(self, event):
@@ -66,11 +138,12 @@ class CamFeedWidget(QLabel):
 class CamFluxWidget(QWidget):
     def __init__(self, resolution=(640, 480)):
         super().__init__()
-        self.setWindowTitle("Webcam Feeds - Qt")
+        self.setWindowTitle("ManyCamFlux")
 
         # Import is done here to avoid circular imports
         from utils import get_available_cameras
         from dialogs import GlobalControlDialog, ScreenshotDialog
+        from PyQt5.QtCore import QDateTime  # Ajout pour l'horodatage des snapshots
         self.GlobalControlDialog = GlobalControlDialog
         self.ScreenshotDialog = ScreenshotDialog
 
@@ -95,6 +168,7 @@ class CamFluxWidget(QWidget):
 
         # Layout for feeds
         self.flux_layout = QGridLayout()
+        self.flux_layout.setSpacing(5)  # Espacement entre les caméras
 
         main_layout = QVBoxLayout()
         self.flux_container = QWidget()
@@ -110,6 +184,11 @@ class CamFluxWidget(QWidget):
         self.screenshot_button = QPushButton("Capture")
         self.screenshot_button.clicked.connect(self.show_screenshot_dialog)
         button_layout.addWidget(self.screenshot_button)
+        
+        # Bouton pour prendre un snapshot unique de toutes les caméras
+        self.snapshot_button = QPushButton("Snapshot")
+        self.snapshot_button.clicked.connect(self.take_snapshot_all)
+        button_layout.addWidget(self.snapshot_button)
 
         main_layout.addLayout(button_layout)
 
@@ -129,6 +208,28 @@ class CamFluxWidget(QWidget):
 
         # Load configuration at startup if it exists
         self.load_config_at_startup()
+    
+    def take_snapshot_all(self):
+        # Créer un dossier de snapshots s'il n'existe pas
+        snapshot_folder = os.path.join(os.path.expanduser("~"), "Pictures", "ManyCamFlux_snapshots")
+        if not os.path.exists(snapshot_folder):
+            os.makedirs(snapshot_folder)
+        
+        # Générer un nom de fichier avec horodatage
+        from PyQt5.QtCore import QDateTime
+        timestamp = QDateTime.currentDateTime().toString("yyyyMMdd_hhmmss")
+        filename = os.path.join(snapshot_folder, f"snapshot_all_{timestamp}.jpg")
+        
+        # Utiliser la fonction existante
+        self.take_screenshot(filename)
+        
+        # Notifier l'utilisateur
+        QMessageBox.information(self, "Snapshot", f"Snapshot de toutes les caméras sauvegardé:\n{filename}")
+        
+        # Ouvrir le dossier
+        if os.path.exists(snapshot_folder):
+            if os.name == 'nt':  # Windows
+                subprocess.Popen(['explorer', snapshot_folder])
 
     def show_global_params(self):
         dialog = self.GlobalControlDialog(self)
@@ -147,6 +248,9 @@ class CamFluxWidget(QWidget):
 
     def set_contrast(self, idx, value):
         self.cam_widgets[idx].contrast = value
+        
+    def set_saturation(self, idx, value):
+        self.cam_widgets[idx].saturation = value
 
     def rotate_camera(self, idx, angle):
         self.cam_widgets[idx].rotation_angle = (self.cam_widgets[idx].rotation_angle + angle) % 360
@@ -228,6 +332,7 @@ class CamFluxWidget(QWidget):
             if ret:
                 frame = widget.apply_rotation(frame)
                 frame = widget.apply_brightness_contrast(frame)
+                frame = widget.apply_saturation(frame)  # Appliquer la saturation
                 frame = cv2.resize(frame, (w, h))  # Resize the image to match the target size
                 row = idx // cols
                 col = idx % cols
@@ -244,6 +349,7 @@ class CamFluxWidget(QWidget):
                 "name": widget.name,
                 "brightness": widget.brightness,
                 "contrast": widget.contrast,
+                "saturation": widget.saturation,  # Sauvegarde de la saturation
                 "rotation_angle": widget.rotation_angle,
                 "visible": self.visible_flags[idx]
             })
@@ -261,6 +367,9 @@ class CamFluxWidget(QWidget):
                     self.cam_widgets[idx].name = cam_config["name"]
                     self.cam_widgets[idx].brightness = cam_config["brightness"]
                     self.cam_widgets[idx].contrast = cam_config["contrast"]
+                    # Récupérer la saturation si elle existe dans le fichier de config
+                    if "saturation" in cam_config:
+                        self.cam_widgets[idx].saturation = cam_config["saturation"]
                     self.cam_widgets[idx].rotation_angle = cam_config["rotation_angle"]
                     self.visible_flags[idx] = cam_config["visible"]
                 self.update_grid_layout()
@@ -275,6 +384,9 @@ class CamFluxWidget(QWidget):
                     self.cam_widgets[idx].name = cam_config["name"]
                     self.cam_widgets[idx].brightness = cam_config["brightness"]
                     self.cam_widgets[idx].contrast = cam_config["contrast"]
+                    # Récupérer la saturation si elle existe dans le fichier de config
+                    if "saturation" in cam_config:
+                        self.cam_widgets[idx].saturation = cam_config["saturation"]
                     self.cam_widgets[idx].rotation_angle = cam_config["rotation_angle"]
                     self.visible_flags[idx] = cam_config["visible"]
                 self.update_grid_layout()
