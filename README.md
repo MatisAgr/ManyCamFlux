@@ -1,16 +1,20 @@
-# ManyCamFlux
+![banner](https://github.com/user-attachments/assets/9316f617-90d5-4a45-8417-354397ed9515)
 
-ManyCamFlux is a tiny project designed to manage multiple webcam feeds using a single Python file. It provides a simple interface to view, control, and capture screenshots from multiple cameras simultaneously.
+ManyCamFlux is a tiny project designed to manage multiple webcam feeds. It provides a simple interface to view, control, and capture screenshots from multiple cameras simultaneously.
 
 ![screen](https://github.com/user-attachments/assets/65cdcf14-3797-47e3-b4d5-0242d7de8c7e)
 
 ## Features
 
-- **Single File Implementation**: The entire project is contained within a single Python file (`ManyCamFlux.py`).
 - **Multiple Camera Support**: Automatically detects and displays feeds from multiple cameras.
-- **Camera Controls**: Adjust brightness, contrast, and rotation for each camera feed.
+- **Camera Controls**: Adjust brightness, contrast, saturation, and rotation for each camera feed.
 - **Screenshot Capture**: Capture screenshots at regular intervals and save them to a specified folder.
+- **Manual Snapshots**: Take instant snapshots of individual cameras or all cameras at once.
 - **Configuration Management**: Save and load camera settings and configurations.
+- **Persistent Settings**: Configuration is automatically saved to user's Documents folder.
+- **Camera Rotation**: Rotate any camera view by 90°, 180°, or 270°.
+- **Aspect Ratio Control**: Option to maintain camera aspect ratios during display and capture.
+- **Adaptive Screenshots**: Maintain proper dimensions for rotated cameras in screenshot grid.
 
 ## Requirements
 
@@ -51,6 +55,8 @@ pip install -r requirements.txt
 
 - Ensure that your cameras are properly connected and recognized by your operating system.
 - The default save folder for screenshots is `~/Pictures/ManyCamFlux_images`.
+- Manual snapshots are saved in `~/Pictures/ManyCamFlux_snapshots`.
+- Configuration files are stored in `~/Documents/ManyCamFlux/`.
 - Cameras are adjusted to the size of the window, so they don't distort when captured.
 
 ## Build with PyInstaller
@@ -64,7 +70,11 @@ To build your modifications of ManyCamFlux project into a standalone executable 
 
 2. **Compile the project**:
     ```sh
-    pyinstaller --onefile --windowed ManyCamFlux.py
+    pyinstaller --onefile -w -i .\assets\icon.ico .\ManyCamFlux.py
+    ```
+    or for debug :
+    ```sh
+    pyinstaller --onefile -i .\assets\icon.ico .\ManyCamFlux.py
     ```
 
 3. **Run the executable**:
@@ -73,7 +83,7 @@ To build your modifications of ManyCamFlux project into a standalone executable 
 
 If PyInstaller is not recognized after installation, try this command:
 ```sh
-python -m PyInstaller --onefile --windowed ManyCamFlux.py
+python -m PyInstaller --onefile -w -i .\assets\icon.ico .\ManyCamFlux.py
 ```
 
 *Further updates and adjustments will follow.*
