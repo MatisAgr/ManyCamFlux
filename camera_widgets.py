@@ -49,18 +49,18 @@ class CamFeedWidget(QLabel):
 
     def show_context_menu(self, position):
         menu = QMenu(self)
-        snapshot_action = QAction("Prendre un snapshot", self)
+        snapshot_action = QAction("Take Snapshot", self)
         snapshot_action.triggered.connect(self.take_snapshot)
         
-        rotate_left = QAction("Rotation ⟲", self)
+        rotate_left = QAction("Rotate ⟲", self)
         rotate_left.triggered.connect(lambda: self.parent_widget.rotate_camera(
             self.parent_widget.cam_widgets.index(self), -90))
         
-        rotate_right = QAction("Rotation ⟳", self)
+        rotate_right = QAction("Rotate ⟳", self)
         rotate_right.triggered.connect(lambda: self.parent_widget.rotate_camera(
             self.parent_widget.cam_widgets.index(self), 90))
         
-        fullscreen_action = QAction("Plein écran", self)
+        fullscreen_action = QAction("Full Screen", self)
         fullscreen_action.triggered.connect(lambda: self.parent_widget.show_fullscreen(self))
         
         menu.addAction(snapshot_action)

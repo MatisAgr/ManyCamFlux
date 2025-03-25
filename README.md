@@ -70,20 +70,26 @@ To build your modifications of ManyCamFlux project into a standalone executable 
 
 2. **Compile the project**:
     ```sh
-    pyinstaller --onefile -w -i .\assets\icon.ico .\ManyCamFlux.py
+    pyinstaller -F -w --add-data="assets/*;." -i assets/icon.ico ManyCamFlux.py
     ```
-    or for debug :
-    ```sh
-    pyinstaller --onefile -i .\assets\icon.ico .\ManyCamFlux.py
-    ```
+    - **No in one file**: Remove `-F` 
+    - **Enable debug console**: Remove `-w`
+    - **Exclude images**: Remove `--add-data="assets/*;."`
+    - **Exclude icon**: Remove `-i assets/icon.ico`
+    - **For Mac/Linux**: Replace `;` with `:` in `--add-data="assets/*:."`
+
+📌 More details available at: [PyInstaller Documentation](https://pyinstaller.org/en/stable/usage.html)
+
 
 3. **Run the executable**:
     - After the compilation, the executable `(ManyCamFlux.exe)` will be located in the `dist` directory. You can run it directly from there.
     - Only the `.exe` file is necessary for the standalone version. It can be portable and moved to another machine if needed.
 
+**Note:**
+
 If PyInstaller is not recognized after installation, try this command:
 ```sh
-python -m PyInstaller --onefile -w -i .\assets\icon.ico .\ManyCamFlux.py
+python -m PyInstaller -F -w --add-data="assets/*;." -i assets/icon.ico ManyCamFlux.py
 ```
 
 *Further updates and adjustments will follow.*

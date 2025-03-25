@@ -8,6 +8,18 @@ from PyQt5.QtGui import QPixmap, QFont, QIcon
 
 from camera_widgets import CamFluxWidget
 
+def resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller
+    thx to : https://stackoverflow.com/questions/31836104/pyinstaller-and-onefile-how-to-include-an-image-in-the-exe-file"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # For dev
+        base_path = os.path.abspath("assets/")
+    
+    return os.path.join(base_path, relative_path)
+
 if __name__ == "__main__":
     from utils import print_info, print_debug, print_success, print_warning
     
@@ -15,7 +27,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     
     # Set application icon
-    icon_path = os.path.join("assets", "icon.ico")
+    icon_path = resource_path(os.path.join("icon.ico"))
     if os.path.exists(icon_path):
         app_icon = QIcon(icon_path)
         app.setWindowIcon(app_icon)
@@ -71,7 +83,7 @@ if __name__ == "__main__":
         print_debug("Showing loading screen with banner")
         
         # Check if banner exists and load it
-        banner_path = os.path.join("assets", "banner.png")
+        banner_path = resource_path(os.path.join("banner.png"))        
         if os.path.exists(banner_path):
             # Load the banner image
             original_pix = QPixmap(banner_path)
@@ -92,7 +104,7 @@ if __name__ == "__main__":
             # Fallback to gray background if banner not found
             print_warning(f"Banner not found at {banner_path}, using default")
             splash_pix = QPixmap(400, 160)  # Smaller default size too
-            splash_pix.fill(Qt.lightGray)
+            splash_pix.fill(Qt.black)
             splash = QSplashScreen(splash_pix)
         
         font = QFont("Arial", 16, QFont.Bold)
