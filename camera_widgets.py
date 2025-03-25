@@ -85,9 +85,28 @@ class CamFeedWidget(QLabel):
         # Capturer l'image
         ret, frame = self.cap.read()
         if ret:
+            # Appliquer les ajustements
             frame = self.apply_rotation(frame)
             frame = self.apply_brightness_contrast(frame)
-            frame = self.apply_saturation(frame)  # Appliquer la saturation
+            frame = self.apply_saturation(frame)
+            
+            # Ajouter le nom de la caméra si l'option est activée
+            if hasattr(self.parent_widget, 'show_labels_in_screenshots') and self.parent_widget.show_labels_in_screenshots:
+                # Ajouter une barre de texte en bas
+                text_bar = np.zeros((30, frame.shape[1], 3), dtype=np.uint8)
+                frame = np.vstack([frame, text_bar])
+                
+                cv2.putText(
+                    frame,
+                    self.name,
+                    (10, frame.shape[0] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (255, 255, 255),
+                    2
+                )
+            
+            # Sauvegarder l'image
             cv2.imwrite(filename, frame)
             
             # Notifier l'utilisateur
@@ -205,12 +224,13 @@ class CamFeedWidget(QLabel):
                 self.parent_widget.exit_fullscreen()
 
 class CamFluxWidget(QWidget):
-    def __init__(self, resolution=(640, 480), keep_aspect_ratio=False):
+    def __init__(self, resolution=(640, 480), keep_aspect_ratio=False, adaptive_resolution=True):
         super().__init__()
         self.setWindowTitle("ManyCamFlux")
         
         self.keep_aspect_ratio = keep_aspect_ratio
-        print_info(f"Keep aspect ratio: {keep_aspect_ratio}")
+        self.adaptive_resolution = adaptive_resolution
+        print_info(f"Keep aspect ratio: {keep_aspect_ratio}, Adaptive resolution: {adaptive_resolution}")
         
         self.show_labels_in_screenshots = True
         
@@ -444,39 +464,204 @@ class CamFluxWidget(QWidget):
         rows = (n + grid_size - 1) // grid_size
         cols = min(n, grid_size)
     
-        h, w = self.selected_resolution[1], self.selected_resolution[0]
-    
-        # Create an empty image to hold all visible cameras
-        screenshot = np.zeros((rows * h, cols * w, 3), dtype=np.uint8)
-    
-        for idx, widget in enumerate(visible_widgets):
-            ret, frame = widget.cap.read()
-            if ret:
-                frame = widget.apply_rotation(frame)
-                frame = widget.apply_brightness_contrast(frame)
-                frame = widget.apply_saturation(frame)
+        # Base dimensions
+        base_h, base_w = self.selected_resolution[1], self.selected_resolution[0]
+        
+        if self.adaptive_resolution == True:  # Condition inverted as requested
+            # Adaptive cells for rotated cameras
+            cell_dimensions = []
+            for widget in visible_widgets:
+                # Check if camera is rotated 90° or 270°
+                rotated_90_or_270 = widget.rotation_angle in [90, 270]
                 
-                if self.show_labels_in_screenshots:
-                    text_bar = np.zeros((30, frame.shape[1], 3), dtype=np.uint8)
-                    frame = np.vstack([frame, text_bar])
-                    
-                    frame = cv2.resize(frame, (w, h))
-                    
-                    cv2.putText(
-                        frame, 
-                        widget.name, 
-                        (10, h - 10), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 
-                        0.7, 
-                        (255, 255, 255), 
-                        2
-                    )
+                if rotated_90_or_270:
+                    # For rotated cameras, invert width and height
+                    cell_dimensions.append((base_h, base_w))
                 else:
-                    frame = cv2.resize(frame, (w, h))
+                    # For normal cameras, keep standard resolution
+                    cell_dimensions.append((base_w, base_h))
+            
+            # Calculate max width for each column and max height for each row
+            col_widths = [0] * cols
+            row_heights = [0] * rows
+            
+            for i, (width, height) in enumerate(cell_dimensions):
+                row = i // cols
+                col = i % cols
+                col_widths[col] = max(col_widths[col], width)
+                row_heights[row] = max(row_heights[row], height)
+            
+            # Calculate final image dimensions
+            total_width = sum(col_widths)
+            total_height = sum(row_heights)
+            
+            # Create capture image with calculated dimensions
+            screenshot = np.zeros((total_height, total_width, 3), dtype=np.uint8)
+            
+            # Initial position
+            y_offset = 0
+            
+            # For each row
+            for row in range(rows):
+                x_offset = 0
                 
-                row = idx // cols
-                col = idx % cols
-                screenshot[row*h:(row+1)*h, col*w:(col+1)*w] = frame
+                # For each column in this row
+                for col in range(cols):
+                    idx = row * cols + col
+                    if idx >= len(visible_widgets):
+                        break
+                        
+                    widget = visible_widgets[idx]
+                    
+                    # Calculate cell dimensions
+                    cell_width = col_widths[col]
+                    cell_height = row_heights[row]
+                    
+                    # Capture and process image
+                    ret, frame = widget.cap.read()
+                    if ret:
+                        # Apply adjustments
+                        frame = widget.apply_brightness_contrast(frame)
+                        frame = widget.apply_saturation(frame)
+                        
+                        # Check if camera is rotated 90° or 270°
+                        rotated_90_or_270 = widget.rotation_angle in [90, 270]
+                        
+                        if rotated_90_or_270:
+                            # For rotated images, invert dimensions for resizing
+                            frame = cv2.resize(frame, (cell_height, cell_width))
+                        else:
+                            frame = cv2.resize(frame, (cell_width, cell_height))
+                        
+                        # Apply rotation
+                        frame = widget.apply_rotation(frame)
+                        
+                        # Add camera name if enabled
+                        if self.show_labels_in_screenshots:
+                            h, w = frame.shape[:2]
+                            text_bar = np.zeros((30, w, 3), dtype=np.uint8)
+                            frame = np.vstack([frame, text_bar])
+                            
+                            cv2.putText(
+                                frame, 
+                                widget.name, 
+                                (10, frame.shape[0] - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 
+                                0.7, 
+                                (255, 255, 255), 
+                                2
+                            )
+                        
+                        # Place image in cell (centered)
+                        h, w = frame.shape[:2]
+                        
+                        # Create temporary cell
+                        temp_cell = np.zeros((cell_height, cell_width, 3), dtype=np.uint8)
+                        
+                        # Calculate centering offsets
+                        offset_x = (cell_width - w) // 2
+                        offset_y = (cell_height - h) // 2
+                        
+                        # Check dimensions
+                        if offset_x >= 0 and offset_y >= 0:
+                            # Place centered image
+                            temp_cell[offset_y:offset_y+h, offset_x:offset_x+w] = frame
+                        else:
+                            # Resize if too large
+                            scale_h = cell_height / h
+                            scale_w = cell_width / w
+                            scale = min(scale_h, scale_w)
+                            
+                            new_h = int(h * scale)
+                            new_w = int(w * scale)
+                            
+                            resized_frame = cv2.resize(frame, (new_w, new_h))
+                            
+                            # Center resized image
+                            new_offset_x = (cell_width - new_w) // 2
+                            new_offset_y = (cell_height - new_h) // 2
+                            
+                            temp_cell[new_offset_y:new_offset_y+new_h, new_offset_x:new_offset_x+new_w] = resized_frame
+                        
+                        # Add cell to final image
+                        screenshot[y_offset:y_offset+cell_height, x_offset:x_offset+cell_width] = temp_cell
+                    
+                    # Next column position
+                    x_offset += cell_width
+                
+                # Next row position
+                y_offset += row_heights[row]
+        else:
+            # Fixed cell size (non-adaptive)
+            screenshot = np.zeros((rows * base_h, cols * base_w, 3), dtype=np.uint8)
+            
+            for idx, widget in enumerate(visible_widgets):
+                ret, frame = widget.cap.read()
+                if ret:
+                    # Apply basic adjustments
+                    frame = widget.apply_brightness_contrast(frame)
+                    frame = widget.apply_saturation(frame)
+                    
+                    # Check rotation
+                    rotated_90_or_270 = widget.rotation_angle in [90, 270]
+                    
+                    if rotated_90_or_270:
+                        # Invert dimensions for rotated cameras
+                        target_w, target_h = base_h, base_w
+                        frame = cv2.resize(frame, (target_h, target_w))
+                    else:
+                        # Standard resize
+                        frame = cv2.resize(frame, (base_w, base_h))
+                    
+                    # Apply rotation
+                    frame = widget.apply_rotation(frame)
+                    
+                    # Add camera name if enabled
+                    if self.show_labels_in_screenshots:
+                        h, w = frame.shape[:2]
+                        text_bar = np.zeros((30, w, 3), dtype=np.uint8)
+                        frame = np.vstack([frame, text_bar])
+                        
+                        cv2.putText(
+                            frame, 
+                            widget.name, 
+                            (10, frame.shape[0] - 10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 
+                            0.7, 
+                            (255, 255, 255), 
+                            2
+                        )
+                    
+                    # Fit to cell if needed
+                    h, w = frame.shape[:2]
+                    if h > base_h or w > base_w:
+                        scale_h = base_h / h
+                        scale_w = base_w / w
+                        scale = min(scale_h, scale_w)
+                        
+                        new_h = int(h * scale)
+                        new_w = int(w * scale)
+                        frame = cv2.resize(frame, (new_w, new_h))
+                    
+                    # Create temporary cell
+                    temp_frame = np.zeros((base_h, base_w, 3), dtype=np.uint8)
+                    
+                    # Center image in cell
+                    offset_x = max(0, (base_w - frame.shape[1]) // 2)
+                    offset_y = max(0, (base_h - frame.shape[0]) // 2)
+                    
+                    # Check bounds
+                    frame_h, frame_w = frame.shape[:2]
+                    place_h = min(frame_h, base_h - offset_y)
+                    place_w = min(frame_w, base_w - offset_x)
+                    
+                    # Place in cell
+                    temp_frame[offset_y:offset_y+place_h, offset_x:offset_x+place_w] = frame[:place_h, :place_w]
+                    
+                    # Add to final image
+                    row = idx // cols
+                    col = idx % cols
+                    screenshot[row*base_h:(row+1)*base_h, col*base_w:(col+1)*base_w] = temp_frame
     
         cv2.imwrite(filename, screenshot)
         print_success(f"Screenshot saved to {filename}")
@@ -485,7 +670,8 @@ class CamFluxWidget(QWidget):
         config = {
             "global_settings": {
                 "show_labels_in_screenshots": self.show_labels_in_screenshots,
-                "keep_aspect_ratio": self.keep_aspect_ratio
+                "keep_aspect_ratio": self.keep_aspect_ratio,
+                "adaptive_resolution": self.adaptive_resolution,
             },
             "cameras": []
         }
@@ -510,6 +696,7 @@ class CamFluxWidget(QWidget):
         except Exception as e:
             print_error(f"Failed to save configuration: {str(e)}")
             QMessageBox.warning(self, "Error", f"Failed to save configuration: {str(e)}")
+
 
     def load_config(self):
         
@@ -555,6 +742,9 @@ class CamFluxWidget(QWidget):
                         if "show_labels_in_screenshots" in config["global_settings"]:
                             self.show_labels_in_screenshots = config["global_settings"]["show_labels_in_screenshots"]
                             print_debug(f"Loaded show_labels_in_screenshots: {self.show_labels_in_screenshots}")
+                        if "adaptive_resolution" in config["global_settings"]:
+                            self.adaptive_resolution = config["global_settings"]["adaptive_resolution"]
+                            print_debug(f"Loaded adaptive_resolution: {self.adaptive_resolution}")
                     
                     for idx, cam_config in enumerate(config["cameras"]):
                         if idx < len(self.cam_widgets):
