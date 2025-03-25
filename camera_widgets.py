@@ -666,6 +666,14 @@ class CamFluxWidget(QWidget):
         cv2.imwrite(filename, screenshot)
         print_success(f"Screenshot saved to {filename}")
 
+    def get_config_path(self):
+        """Send the path to the configuration file."""
+        config_dir = os.path.join(os.path.expanduser("~"), "Documents", "ManyCamFlux")
+        if not os.path.exists(config_dir):
+            os.makedirs(config_dir)
+            print_debug(f"Created configuration directory: {config_dir}")
+        return os.path.join(config_dir, "ManyCamFlux_config.json")
+
     def save_config(self):
         config = {
             "global_settings": {
@@ -685,7 +693,7 @@ class CamFluxWidget(QWidget):
                 "visible": self.visible_flags[idx]
             })
         
-        config_path = os.path.join(os.path.dirname(__file__), "ManyCamFlux_config.json")
+        config_path = self.get_config_path()
         print_info(f"Saving configuration to {config_path}")
         
         try:
@@ -696,7 +704,6 @@ class CamFluxWidget(QWidget):
         except Exception as e:
             print_error(f"Failed to save configuration: {str(e)}")
             QMessageBox.warning(self, "Error", f"Failed to save configuration: {str(e)}")
-
 
     def load_config(self):
         
@@ -732,7 +739,7 @@ class CamFluxWidget(QWidget):
             QMessageBox.warning(self, "Error", f"Failed to load configuration: {str(e)}")
 
     def load_config_at_startup(self):
-        config_path = os.path.join(os.path.dirname(__file__), "ManyCamFlux_config.json")
+        config_path = self.get_config_path()        
         if os.path.exists(config_path):
             try:
                 with open(config_path, 'r') as config_file:
