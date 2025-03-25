@@ -1,21 +1,35 @@
 import sys
+import os
 from PyQt5.QtWidgets import (QApplication, QDialog, QVBoxLayout, QLabel, 
                            QComboBox, QDialogButtonBox, QSplashScreen, 
                            QCheckBox)
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap, QFont
+from PyQt5.QtGui import QPixmap, QFont, QIcon
 
 from camera_widgets import CamFluxWidget
 
 if __name__ == "__main__":
-    from utils import print_info, print_debug, print_success
+    from utils import print_info, print_debug, print_success, print_warning
     
     print_info("Starting ManyCamFlux application")
     app = QApplication(sys.argv)
+    
+    # Set application icon
+    icon_path = os.path.join("assets", "icon.ico")
+    if os.path.exists(icon_path):
+        app_icon = QIcon(icon_path)
+        app.setWindowIcon(app_icon)
+        print_debug(f"Loaded application icon from {icon_path}")
+    else:
+        print_warning(f"Icon not found at {icon_path}, using default")
 
     print_debug("Showing resolution selection dialog")
     resolution_dialog = QDialog()
     resolution_dialog.setWindowTitle("Choose Camera Resolution")
+    # Set icon for resolution dialog if available
+    if os.path.exists(icon_path):
+        resolution_dialog.setWindowIcon(QIcon(icon_path))
+    
     layout = QVBoxLayout()
     resolution_label = QLabel("Select Camera Resolutions:")
     resolution_combo = QComboBox()
@@ -54,14 +68,28 @@ if __name__ == "__main__":
         keep_aspect_ratio = keep_aspect_ratio_cb.isChecked()
         print_debug(f"Keep aspect ratio: {keep_aspect_ratio}")
         
-        print_debug("Showing loading screen")
-        splash_pix = QPixmap(400, 200)
-        splash_pix.fill(Qt.lightGray)
-        splash = QSplashScreen(splash_pix)
+        print_debug("Showing loading screen with banner")
+        
+        # Check if banner exists and load it
+        banner_path = os.path.join("assets", "banner.png")
+        if os.path.exists(banner_path):
+            # Load the banner image
+            splash_pix = QPixmap(banner_path)
+            # Use original banner size
+            splash = QSplashScreen(splash_pix)
+            print_debug(f"Loaded banner from {banner_path}")
+        else:
+            # Fallback to gray background if banner not found
+            print_warning(f"Banner not found at {banner_path}, using default")
+            splash_pix = QPixmap(500, 200)
+            splash_pix.fill(Qt.lightGray)
+            splash = QSplashScreen(splash_pix)
         
         font = QFont("Arial", 16, QFont.Bold)
         splash.setFont(font)
-        splash.showMessage("Loading cameras...", Qt.AlignCenter, Qt.black)
+        
+        # Display message over the banner
+        splash.showMessage("Loading cameras...", Qt.AlignBottom | Qt.AlignCenter, Qt.white)
         
         splash.show()
         app.processEvents() 
@@ -70,6 +98,10 @@ if __name__ == "__main__":
         adaptive_resolution = adaptive_resolution_cb.isChecked()
         print_debug(f"Adaptive resolution: {adaptive_resolution}")
         widget = CamFluxWidget(resolution, keep_aspect_ratio, adaptive_resolution)
+        
+        # Set the application icon for the main window too
+        if os.path.exists(icon_path):
+            widget.setWindowIcon(QIcon(icon_path))
         
         print_debug("Initialization complete, showing main window")
         splash.finish(widget)
