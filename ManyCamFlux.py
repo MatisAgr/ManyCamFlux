@@ -76,14 +76,25 @@ if __name__ == "__main__":
             # Load the banner image
             original_pix = QPixmap(banner_path)
             
-            # Resize the banner (reduce to 30% of original size)
-            scale_factor = 0.3
+            # Get screen dimensions
+            screen = app.primaryScreen()
+            screen_size = screen.size()
+            screen_width = screen_size.width()
+            
+            # Calculate appropriate scale factor based on screen width
+            # Target width: about 40% of screen width
+            target_width = int(screen_width * 0.4)
+            scale_factor = target_width / original_pix.width()
+            
+            # Apply the calculated scale factor
             new_width = int(original_pix.width() * scale_factor)
             new_height = int(original_pix.height() * scale_factor)
             
+            print_debug(f"Screen width: {screen_width}px, Banner scale factor: {scale_factor:.2f}")
+            
             splash_pix = original_pix.scaled(new_width, new_height, 
-                                             Qt.KeepAspectRatio, 
-                                             Qt.SmoothTransformation)
+                                                Qt.KeepAspectRatio, 
+                                                Qt.SmoothTransformation)
             
             # Create splash screen with resized banner
             splash = QSplashScreen(splash_pix)
