@@ -74,14 +74,24 @@ if __name__ == "__main__":
         banner_path = os.path.join("assets", "banner.png")
         if os.path.exists(banner_path):
             # Load the banner image
-            splash_pix = QPixmap(banner_path)
-            # Use original banner size
+            original_pix = QPixmap(banner_path)
+            
+            # Resize the banner (reduce to 30% of original size)
+            scale_factor = 0.3
+            new_width = int(original_pix.width() * scale_factor)
+            new_height = int(original_pix.height() * scale_factor)
+            
+            splash_pix = original_pix.scaled(new_width, new_height, 
+                                             Qt.KeepAspectRatio, 
+                                             Qt.SmoothTransformation)
+            
+            # Create splash screen with resized banner
             splash = QSplashScreen(splash_pix)
-            print_debug(f"Loaded banner from {banner_path}")
+            print_debug(f"Loaded and scaled banner from {banner_path} ({new_width}x{new_height})")
         else:
             # Fallback to gray background if banner not found
             print_warning(f"Banner not found at {banner_path}, using default")
-            splash_pix = QPixmap(500, 200)
+            splash_pix = QPixmap(400, 160)  # Smaller default size too
             splash_pix.fill(Qt.lightGray)
             splash = QSplashScreen(splash_pix)
         
