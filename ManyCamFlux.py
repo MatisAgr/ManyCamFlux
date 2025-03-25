@@ -9,7 +9,8 @@ from PyQt5.QtGui import QPixmap, QFont, QIcon
 from camera_widgets import CamFluxWidget
 
 def resource_path(relative_path):
-    """Get absolute path to resource, works for dev and for PyInstaller"""
+    """Get absolute path to resource, works for dev and for PyInstaller
+    thx to : https://stackoverflow.com/questions/31836104/pyinstaller-and-onefile-how-to-include-an-image-in-the-exe-file"""
     try:
         # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
@@ -102,7 +103,7 @@ if __name__ == "__main__":
             # Fallback to gray background if banner not found
             print_warning(f"Banner not found at {banner_path}, using default")
             splash_pix = QPixmap(400, 160)  # Smaller default size too
-            splash_pix.fill(Qt.lightGray)
+            splash_pix.fill(Qt.black)
             splash = QSplashScreen(splash_pix)
         
         font = QFont("Arial", 16, QFont.Bold)
