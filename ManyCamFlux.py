@@ -15,7 +15,8 @@ def resource_path(relative_path):
         # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
-        base_path = os.path.abspath(".")
+        # For dev
+        base_path = os.path.abspath("assets/")
     
     return os.path.join(base_path, relative_path)
 
@@ -26,7 +27,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     
     # Set application icon
-    icon_path = resource_path(os.path.join("assets", "icon.ico"))
+    icon_path = resource_path(os.path.join("icon.ico"))
     if os.path.exists(icon_path):
         app_icon = QIcon(icon_path)
         app.setWindowIcon(app_icon)
@@ -82,7 +83,7 @@ if __name__ == "__main__":
         print_debug("Showing loading screen with banner")
         
         # Check if banner exists and load it
-        banner_path = resource_path(os.path.join("assets", "banner.png"))        
+        banner_path = resource_path(os.path.join("banner.png"))        
         if os.path.exists(banner_path):
             # Load the banner image
             original_pix = QPixmap(banner_path)
