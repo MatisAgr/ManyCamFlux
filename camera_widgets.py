@@ -393,19 +393,62 @@ class CamFluxWidget(QWidget):
             return
         
         container_width = self.flux_container.width()
-        min_camera_width = 500
+        container_height = self.flux_container.height()
         
-        max_columns = max(1, container_width // min_camera_width)
+        # Calculate optimal columns based on square root
+        optimal_cols = int(np.sqrt(n))
         
-        rows = (n + max_columns - 1) // max_columns
-        cols = min(n, max_columns)
+        # Adjust columns based on window ratio and parity
+        window_ratio = container_width / max(1, container_height)
         
-        print_debug(f"Responsive layout: {rows} rows, {cols} columns for {n} cameras")
+        # Specific handling by parity
+        if n % 2 == 0:  # Even count
+            if window_ratio > 2.4:  # Very wide window
+                optimal_cols = min(n, optimal_cols + 2)
+            # Don't increase for standard ratio (16:9)
+        else:  # Odd count
+            if window_ratio > 2.0:  # Very wide window
+                optimal_cols = min(n, optimal_cols + 2)
+            elif window_ratio > 0.8:  # For 16:9 screens
+                optimal_cols = min(n, optimal_cols + 1)
         
+        # Common for both parities
+        if window_ratio < 0.8:  # Tall window
+            optimal_cols = max(1, optimal_cols - 1)
+         
+        # Ensure valid column count
+        cols = max(1, min(n, optimal_cols))
+        rows = (n + cols - 1) // cols
+        
+        print_debug(f"Responsive layout: {rows} rows, {cols} columns for {n} cameras (window ratio: {window_ratio:.2f})")
+        
+        # Place widgets
         for i, widget in enumerate(visible_widgets):
             row = i // cols
             col = i % cols
-            self.flux_layout.addWidget(widget, row, col)
+            
+            # Special case: last row with odd cameras
+            if row == rows - 1 and n % cols != 0:
+                # Camera count in last row
+                last_row_cameras = n % cols
+                # If camera is in last row
+                if i >= n - last_row_cameras:
+                    # Center cameras in last row
+                    cols_in_last_row = n - (rows - 1) * cols
+                    col_span = 1
+                    # If last camera with free space
+                    if i == n - 1 and cols_in_last_row < cols:
+                        # Extend across remaining columns
+                        col_span = cols - col
+                    
+                    # Center by offsetting start point
+                    start_col = (cols - cols_in_last_row) // 2
+                    self.flux_layout.addWidget(widget, row, start_col + (i - (n - cols_in_last_row)), 1, col_span)
+                else:
+                    self.flux_layout.addWidget(widget, row, col)
+            else:
+                # Standard case for filled rows
+                self.flux_layout.addWidget(widget, row, col)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
