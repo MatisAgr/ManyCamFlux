@@ -2,7 +2,7 @@
 
 ManyCamFlux is a tiny project designed to manage multiple webcam feeds. It provides a simple interface to view, control, and capture screenshots from multiple cameras simultaneously.
 
-![screen](https://github.com/user-attachments/assets/65cdcf14-3797-47e3-b4d5-0242d7de8c7e)
+![image](https://github.com/user-attachments/assets/3635bd60-38c2-48b7-b4ed-c857f2218c26)
 
 ## Features
 
