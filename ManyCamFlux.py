@@ -52,6 +52,8 @@ if __name__ == "__main__":
         "1280x720 (16:9) (HD)",
         "1600x1200 (4:3) (UXGA)",
         "1920x1080 (16:9) (FHD)"
+        "3264x2448 (4:3) (QUXGA+)",
+        "3840x2160 (16:9) (4K UHD)",
     ])
     layout.addWidget(resolution_label)
     layout.addWidget(resolution_combo)
