@@ -1,5 +1,7 @@
 ![banner](https://github.com/user-attachments/assets/9316f617-90d5-4a45-8417-354397ed9515)
 
+[![wakatime](https://wakatime.com/badge/user/a16f794f-b91d-4818-8dfc-d768ce605ece/project/94551038-ee66-499c-98e7-57493dd05c2d.svg)](https://wakatime.com/badge/user/a16f794f-b91d-4818-8dfc-d768ce605ece/project/94551038-ee66-499c-98e7-57493dd05c2d)
+
 ManyCamFlux is a tiny project designed to manage multiple webcam feeds. It provides a simple interface to view, control, and capture screenshots from multiple cameras simultaneously.
 
 ![image](https://github.com/user-attachments/assets/3635bd60-38c2-48b7-b4ed-c857f2218c26)
