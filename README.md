@@ -15,6 +15,8 @@ ManyCamFlux is a tiny project designed to manage multiple webcam feeds. It provi
 
 ![Recordings browser](docs/screenshots/recordings.png)
 
+![Settings](docs/screenshots/settings.png)
+
 *Screenshots taken with simulated cameras (`--simulate 6`).*
 
 ## Features
