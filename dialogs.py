@@ -269,14 +269,18 @@ class CaptureSettingsDialog(QDialog):
         form.addRow("", self.motion)
         self.threshold = QDoubleSpinBox()
         self.threshold.setRange(0.05, 20)
-        self.threshold.setDecimals(2)
-        self.threshold.setSingleStep(0.1)
+        self.threshold.setDecimals(1)
+        self.threshold.setSingleStep(0.5)
         self.threshold.setSuffix(" % of the image")
-        self.threshold.setToolTip("Share of the image that must change to count as motion: lower = more sensitive")
+        self.threshold.setToolTip(
+            "How big a change must be to count as motion (lower = more sensitive).\n"
+            "In 1080p: a hand ≈ 0.6 %, a person far away ≈ 1.2 %, a person nearby ≈ 9 %.\n"
+            "1 % (default) suits most scenes; 2-3 % outdoors (leaves, rain).\n"
+            "Small light changes are ignored whatever the value; a light switched on always counts.")
         self.threshold.setValue(cfg["video_motion_threshold"])
         self.threshold.setEnabled(self.motion.isChecked())
         self.motion.toggled.connect(self.threshold.setEnabled)
-        form.addRow("Motion threshold", self.threshold)
+        form.addRow("Min. moving area", self.threshold)
         split_row = QHBoxLayout()
         self.split = QCheckBox("Split files every")
         self.split.setChecked(cfg["video_split"])

@@ -28,7 +28,7 @@ DEFAULTS = {
     "video_fps": 30,
     "video_per_camera": True,
     "video_motion_only": False,
-    "video_motion_threshold": 0.5,
+    "video_motion_threshold": 1.0,
     "video_timestamp": False,
     "video_split": True,
     "show_info_bar": True,

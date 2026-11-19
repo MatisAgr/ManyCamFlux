@@ -82,7 +82,7 @@ class MotionDetector:
     SIZE = (160, 120)
     PIXEL_DELTA = 25  # grey levels; above sensor noise once blurred
 
-    def __init__(self, min_area_percent=0.5):
+    def __init__(self, min_area_percent=1.0):
         self.min_area = min_area_percent / 100
         self.ref = None
 
