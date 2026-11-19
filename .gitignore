@@ -6,3 +6,6 @@ __pycache__
 
 /prod
 /dev
+
+.proj
+.pytest_cache

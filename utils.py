@@ -1,63 +1,66 @@
-import cv2
+"""Version, assets and coloured console logging."""
+import os
+import sys
 
-def get_available_cameras(max_cameras=10):
-    """Detects available cameras on the system"""
-    cams = []
-    for i in range(max_cameras):
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            cams.append(i)
-            cap.release()
-    return cams
+from PyQt5.QtGui import QIcon
 
-# ANSI COLORS for terminal output
-class Colors:
-    RESET = "\033[0m"
-    BLACK = "\033[30m"
-    RED = "\033[31m"
-    GREEN = "\033[32m"
-    YELLOW = "\033[33m"
-    BLUE = "\033[34m"
-    MAGENTA = "\033[35m"
-    CYAN = "\033[36m"
-    WHITE = "\033[37m"
-    BOLD = "\033[1m"
-    UNDERLINE = "\033[4m"
-    BG_RED = "\033[41m"
-    BG_GREEN = "\033[42m"
-    BG_YELLOW = "\033[43m"
-    BG_BLUE = "\033[44m"
+VERSION = "2.0"
+REPO_URL = "https://github.com/MatisAgr/ManyCamFlux"
 
-def color_print(message, color=Colors.WHITE, bold=False, underline=False):
-    """
-    Prints a colored message to the console
-    
-    Args:
-        message (str): The message to display
-        color (str): ANSI color code (constant from Colors class)
-        bold (bool): If True, text will be bold
-        underline (bool): If True, text will be underlined
-    """
-    format_str = color
-    if bold:
-        format_str = Colors.BOLD + format_str
-    if underline:
-        format_str = Colors.UNDERLINE + format_str
-    
-    print(f"{format_str}{message}{Colors.RESET}")
 
-# Helper functions for different message types
+def hms(seconds):
+    s = int(seconds)
+    return f"{s // 3600:02d}:{s // 60 % 60:02d}:{s % 60:02d}"
+
+
+def parse_hms(text):
+    """'hh:mm:ss' (also 'mm:ss' or 'ss') -> seconds; 0 if empty or invalid."""
+    try:
+        parts = [int(p) for p in text.strip().split(":")]
+    except ValueError:
+        return 0
+    if not 1 <= len(parts) <= 3 or any(p < 0 for p in parts):
+        return 0
+    return sum(p * 60 ** i for i, p in enumerate(reversed(parts)))
+
+
+def resource_path(relative_path):
+    """Absolute path to a file in assets/, in dev and in a PyInstaller build (--add-data "assets;assets")."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "assets", relative_path)
+
+
+def icon(name):
+    return QIcon(resource_path(os.path.join("icons", f"{name}.svg")))
+
+
+RESET, RED, GREEN, YELLOW, BLUE, CYAN, BOLD = "\033[0m", "\033[31m", "\033[32m", "\033[33m", "\033[34m", "\033[36m", "\033[1m"
+
+
+def color_print(message, color):
+    if sys.stdout is None:  # windowed PyInstaller build: no console
+        return
+    try:
+        print(f"{color}{message}{RESET}", flush=True)
+    except UnicodeEncodeError:  # console code page without the needed characters
+        print(message.encode("ascii", "replace").decode(), flush=True)
+
+
 def print_error(message):
-    color_print(f"[ERROR] {message}", Colors.RED, bold=True)
+    color_print(f"[ERROR] {message}", BOLD + RED)
+
 
 def print_warning(message):
-    color_print(f"[WARNING] {message}", Colors.YELLOW)
+    color_print(f"[WARNING] {message}", YELLOW)
+
 
 def print_success(message):
-    color_print(f"[SUCCESS] {message}", Colors.GREEN)
+    color_print(f"[SUCCESS] {message}", GREEN)
+
 
 def print_info(message):
-    color_print(f"[INFO] {message}", Colors.BLUE)
+    color_print(f"[INFO] {message}", BLUE)
+
 
 def print_debug(message):
-    color_print(f"[DEBUG] {message}", Colors.CYAN)
+    color_print(f"[DEBUG] {message}", CYAN)

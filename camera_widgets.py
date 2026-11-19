@@ -1,811 +1,737 @@
-import cv2
-import numpy as np
-import os
 import json
-import subprocess
-from PyQt5.QtWidgets import (QLabel, QWidget, QGridLayout, QVBoxLayout, 
-                            QHBoxLayout, QPushButton, QMessageBox, QFileDialog,
-                            QMenu, QAction, QSizePolicy)
-from PyQt5.QtCore import Qt, QTimer, QDateTime
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QCursor
+import math
+import os
+from datetime import datetime
 
-from utils import get_available_cameras, print_info, print_debug, print_error, print_success, print_warning
-from dialogs import GlobalControlDialog, ScreenshotDialog
+from PyQt5.QtCore import QEvent, QRect, QRectF, QSize, Qt, QTimer, QUrl
+from PyQt5.QtGui import QColor, QDesktopServices, QPainter, QPen
+from PyQt5.QtWidgets import (QAction, QCheckBox, QComboBox, QDockWidget, QFileDialog, QGridLayout,
+                             QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QProgressBar,
+                             QScrollArea, QSizePolicy, QToolBar, QToolButton, QWidget)
 
-class CamFeedWidget(QLabel):
-    def __init__(self, cap, parent=None, name=""):
+from camera import Camera, clamp, fits, list_cameras
+from dialogs import CameraPanel, CaptureSettingsDialog, fill_resolutions
+from imaging import best_grid, compose_grid, draw_label, fit_size, safe_name
+from recorder import RenderJob, Timelapse, VideoRecorder, save_async
+from utils import REPO_URL, VERSION, hms, icon, print_error, print_info, print_success, print_warning
+
+CONFIG_PATH = os.path.join(os.path.expanduser("~"), "Documents", "ManyCamFlux", "ManyCamFlux_config.json")
+DEFAULT_OUTPUT = os.path.join(os.path.expanduser("~"), "Pictures", "ManyCamFlux")
+DEFAULTS = {
+    "resolution": [1280, 720],
+    "keep_aspect_ratio": True,
+    "adaptive_resolution": True,
+    "show_labels_in_screenshots": True,
+    "output_folder": DEFAULT_OUTPUT,
+    "timelapse_interval": 5.0,
+    "timelapse_per_camera": False,
+    "video_fps": 30,
+    "video_per_camera": True,
+    "video_motion_only": False,
+    "video_motion_threshold": 0.5,
+    "video_timestamp": False,
+    "video_split": True,
+    "show_info_bar": True,
+    "timelapse_duration": 0,  # seconds, 0 = until stopped
+    "video_duration": 0,
+    "video_segment_minutes": 10,
+}
+ACCENT = QColor(53, 132, 228)
+
+
+def stamp():
+    return datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+
+
+def load_config(path):
+    """(global settings, camera settings list). Unknown keys are ignored, missing ones defaulted."""
+    cfg = dict(DEFAULTS)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        cfg.update({k: v for k, v in data.get("global_settings", {}).items() if k in DEFAULTS})
+        return cfg, [c for c in data.get("cameras", []) if isinstance(c, dict)]
+    except FileNotFoundError:
+        return cfg, []
+
+
+class CamFeedWidget(QWidget):
+    """Paints the camera preview produced by its Camera thread, plus an info overlay."""
+
+    def __init__(self, camera, main, parent):
         super().__init__(parent)
-        self.cap = cap
-        self.rotation_angle = 0
-        self.brightness = 0
-        self.contrast = 0
-        self.saturation = 0
-        self.name = name
-        
-        self.original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.aspect_ratio = self.original_width / self.original_height
-        
-        self.setMouseTracking(True)
-        
-        self.setScaledContents(False)
-        self.setAlignment(Qt.AlignCenter)
-        
-        self.fullscreen_mode = False
-        self.parent_widget = parent
-        self.setStyleSheet("background-color: lightblue;")
-        self.setFont(QFont("Arial", 14, QFont.Bold))
-        
+        self.camera, self.main = camera, main
+        self._shown = None
+        self.setMinimumSize(160, 120)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
-        
-        self.setMinimumSize(160, 120)
-        
-        self.original_pixmap = None
-        self.scaled_pixmap = None
 
+    def refresh(self):
+        """Repaint only when something visible changed (new frame, status, name...)."""
+        c = self.camera
+        key = (c.frame_id, c.status, c.label, self.main.recording, self.main.selected is c)
+        if key != self._shown:
+            self._shown = key
+            self.update()
 
-    def show_context_menu(self, position):
-        menu = QMenu(self)
-        snapshot_action = QAction("Take Snapshot", self)
-        snapshot_action.triggered.connect(self.take_snapshot)
-        
-        rotate_left = QAction("Rotate ⟲", self)
-        rotate_left.triggered.connect(lambda: self.parent_widget.rotate_camera(
-            self.parent_widget.cam_widgets.index(self), -90))
-        
-        rotate_right = QAction("Rotate ⟳", self)
-        rotate_right.triggered.connect(lambda: self.parent_widget.rotate_camera(
-            self.parent_widget.cam_widgets.index(self), 90))
-        
-        fullscreen_action = QAction("Full Screen", self)
-        fullscreen_action.triggered.connect(lambda: self.parent_widget.show_fullscreen(self))
-        
-        menu.addAction(snapshot_action)
-        menu.addSeparator()
-        menu.addAction(rotate_left)
-        menu.addAction(rotate_right)
-        menu.addSeparator()
-        menu.addAction(fullscreen_action)
-        
-        menu.exec_(QCursor.pos())
-
-    def take_snapshot(self):
-        # Créer un dossier de snapshots s'il n'existe pas
-        snapshot_folder = os.path.join(os.path.expanduser("~"), "Pictures", "ManyCamFlux_snapshots")
-        if not os.path.exists(snapshot_folder):
-            os.makedirs(snapshot_folder)
-        
-        # Générer un nom de fichier avec horodatage
-        timestamp = QDateTime.currentDateTime().toString("yyyyMMdd_hhmmss")
-        filename = os.path.join(snapshot_folder, f"snapshot_{self.name}_{timestamp}.jpg")
-        
-        # Capturer l'image
-        ret, frame = self.cap.read()
-        if ret:
-            # Appliquer les ajustements
-            frame = self.apply_rotation(frame)
-            frame = self.apply_brightness_contrast(frame)
-            frame = self.apply_saturation(frame)
-            
-            # Ajouter le nom de la caméra si l'option est activée
-            if hasattr(self.parent_widget, 'show_labels_in_screenshots') and self.parent_widget.show_labels_in_screenshots:
-                # Ajouter une barre de texte en bas
-                text_bar = np.zeros((30, frame.shape[1], 3), dtype=np.uint8)
-                frame = np.vstack([frame, text_bar])
-                
-                cv2.putText(
-                    frame,
-                    self.name,
-                    (10, frame.shape[0] - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (255, 255, 255),
-                    2
-                )
-            
-            # Sauvegarder l'image
-            cv2.imwrite(filename, frame)
-            
-            # Notifier l'utilisateur
-            QMessageBox.information(self, "Snapshot", f"Snapshot sauvegardé:\n{filename}")
-
-    def update_frame(self):
-        ret, frame = self.cap.read()
-        if not ret:
-            frame = np.zeros((self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT), self.cap.get(cv2.CAP_PROP_FRAME_WIDTH), 3), dtype=np.uint8)
-        frame = self.apply_rotation(frame)
-        frame = self.apply_brightness_contrast(frame)
-        frame = self.apply_saturation(frame)
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = frame.shape
-        bytes_per_line = ch * w
-        qimg = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        
-        self.original_pixmap = QPixmap.fromImage(qimg)
-        self.updateScaledPixmap()
-        
-    def updateScaledPixmap(self):
-        if self.original_pixmap is None:
-            return
-            
-        label_size = self.size()
-        w, h = label_size.width(), label_size.height()
-        
-        if w == 0 or h == 0:
-            return
-            
-        if self.parent_widget.keep_aspect_ratio:
-            pixmap_ratio = self.original_pixmap.width() / self.original_pixmap.height()
-            
-            if w / h > pixmap_ratio:
-                new_width = int(h * pixmap_ratio)
-                new_height = h
-            else:
-                new_width = w
-                new_height = int(w / pixmap_ratio)
-            
-            self.scaled_pixmap = self.original_pixmap.scaled(
-                new_width, new_height, 
-                Qt.KeepAspectRatio, 
-                Qt.SmoothTransformation
-            )
-        else:
-            self.scaled_pixmap = self.original_pixmap.scaled(
-                w, h,
-                Qt.IgnoreAspectRatio,
-                Qt.SmoothTransformation
-            )
-        
-        self.setPixmap(self.scaled_pixmap)
-        
     def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.updateScaledPixmap()
-
-        
-    def apply_rotation(self, frame):
-        if self.rotation_angle == 90:
-            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-        elif self.rotation_angle == 180:
-            frame = cv2.rotate(frame, cv2.ROTATE_180)
-        elif self.rotation_angle == 270:
-            frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        return frame
-
-    def apply_brightness_contrast(self, frame):
-        frame = cv2.convertScaleAbs(frame, alpha=1 + self.contrast / 100, beta=self.brightness)
-        return frame
-    
-    def apply_saturation(self, frame):
-        # Convertir en HSV pour modifier la saturation
-        if self.saturation != 0:
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype("float32")
-            (h, s, v) = cv2.split(hsv)
-            
-            # Ajuster la saturation
-            s = s * (1 + self.saturation / 100)
-            s = np.clip(s, 0, 255)
-            
-            # Fusionner les canaux et reconvertir en BGR
-            hsv = cv2.merge([h, s, v])
-            frame = cv2.cvtColor(hsv.astype("uint8"), cv2.COLOR_HSV2BGR)
-        return frame
+        dpr = self.devicePixelRatioF()
+        self.camera.display_size = (max(1, int(self.width() * dpr)), max(1, int(self.height() * dpr)))
 
     def paintEvent(self, event):
-        if self.scaled_pixmap:
-            painter = QPainter(self)
-            
-            if self.parent_widget.keep_aspect_ratio:
-                x = (self.width() - self.scaled_pixmap.width()) // 2
-                y = (self.height() - self.scaled_pixmap.height()) // 2
-                
-                painter.drawPixmap(x, y, self.scaled_pixmap)
+        c, w, h = self.camera, self.width(), self.height()
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(16, 17, 19))
+        preview = c.preview  # read once: the thread may swap it meanwhile
+        if preview is not None:
+            img = preview[0]
+            if self.main.keep_aspect_ratio:
+                iw, ih = fit_size(img.width(), img.height(), w, h)
+                target = QRectF((w - iw) / 2, (h - ih) / 2, iw, ih)
             else:
-                painter.drawPixmap(0, 0, self.width(), self.height(), self.scaled_pixmap)
-            
-            painter.setPen(QColor(255, 255, 255))
-            painter.setBrush(QColor(0, 0, 0, 180))  # Fond semi-transparent
-            painter.drawRect(0, self.height() - 30, self.width(), 30)
-            painter.drawText(10, self.height() - 10, self.name)
-            
-            painter.end()
-        else:
-            super().paintEvent(event)
+                target = QRectF(self.rect())
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
+            p.drawImage(target, img)
+
+        bar = 26 if self.main.cfg["show_info_bar"] else 0
+        if bar:
+            p.fillRect(0, h - bar, w, bar, QColor(0, 0, 0, 170))
+            frame = c.frame
+            info = ""
+            if frame is not None:
+                size, tag = f"{frame.shape[1]}×{frame.shape[0]}", c.resolution_tag(frame)
+                if tag == "downscaled":
+                    full = f"{size} · downscaled from {c.native[0]}×{c.native[1]} · {c.fps:.0f} fps"
+                    info = full if p.fontMetrics().horizontalAdvance(full) < w * 0.65 else \
+                        f"{size} · downscaled · {c.fps:.0f} fps"
+                else:
+                    info = f"{size}{' · native' if tag else ''} · {c.fps:.0f} fps"
+            info_w = p.fontMetrics().horizontalAdvance(info) + 10
+            p.setPen(QColor(170, 170, 175))
+            p.drawText(QRect(0, h - bar, w - 10, bar), Qt.AlignVCenter | Qt.AlignRight, info)
+            font = p.font()
+            font.setBold(True)
+            p.setFont(font)
+            p.setPen(Qt.white)
+            name = p.fontMetrics().elidedText(c.label, Qt.ElideRight, max(0, w - info_w - 20))
+            p.drawText(QRect(10, h - bar, w, bar), Qt.AlignVCenter | Qt.AlignLeft, name)
+
+        if c.status:
+            p.drawText(QRect(0, 0, w, h - bar), Qt.AlignCenter, c.status)
+        if self.main.recording:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(220, 50, 47))
+            p.drawEllipse(w - 22, 10, 12, 12)
+        if self.main.selected is c:
+            p.setPen(QPen(ACCENT, 2))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(QRectF(self.rect()).adjusted(1, 1, -1, -1))
+
+    def mousePressEvent(self, event):
+        self.main.select_camera(self.camera)
 
     def mouseDoubleClickEvent(self, event):
-        # On double-click, toggle fullscreen mode
         if event.button() == Qt.LeftButton:
-            if not self.fullscreen_mode:
-                self.parent_widget.show_fullscreen(self)
-            else:
-                self.parent_widget.exit_fullscreen()
+            self.main.toggle_focus(self)
 
-class CamFluxWidget(QWidget):
-    def __init__(self, resolution=(640, 480), keep_aspect_ratio=False, adaptive_resolution=True):
+    def show_context_menu(self, pos):
+        m = self.main
+        menu = QMenu(self)
+        menu.addAction(icon("camera"), "Snapshot this camera", lambda: m.snapshot_camera(self.camera))
+        menu.addSeparator()
+        menu.addAction(icon("rotate-left"), "Rotate left", lambda: m.rotate(self.camera, -90))
+        menu.addAction(icon("rotate-right"), "Rotate right", lambda: m.rotate(self.camera, 90))
+        for attr, name, text in (("flip_h", "flip-h", "Mirror horizontally"), ("flip_v", "flip-v", "Mirror vertically")):
+            action = menu.addAction(icon(name), text)
+            action.setCheckable(True)
+            action.setChecked(getattr(self.camera, attr))
+            action.toggled.connect(lambda on, a=attr: m.set_flip(self.camera, a, on))
+        menu.addSeparator()
+        menu.addAction(icon("focus"), "Back to grid" if m.focused is self else "Focus (double-click)",
+                       lambda: m.toggle_focus(self))
+        menu.addAction(icon("eye-off"), "Hide", lambda: m.set_visible(self.camera, False))
+        menu.exec_(self.mapToGlobal(pos))
+
+
+class CamFluxWidget(QMainWindow):
+    def __init__(self):
         super().__init__()
         self.setWindowTitle("ManyCamFlux")
-        
-        self.keep_aspect_ratio = keep_aspect_ratio
-        self.adaptive_resolution = adaptive_resolution
-        print_info(f"Keep aspect ratio: {keep_aspect_ratio}, Adaptive resolution: {adaptive_resolution}")
-        
-        self.show_labels_in_screenshots = True
-        
-        self.resize_timer = QTimer()
-        self.resize_timer.setSingleShot(True)
-        self.resize_timer.timeout.connect(self.update_grid_layout)
+        self.resize(1280, 800)
+        self.feeds = {}  # device id -> CamFeedWidget, in display order
+        self.focused = None
+        self.selected = None
+        self.timelapse = None
+        self.video = None
+        self.renders = []
+        self.recordings = None
+        try:
+            self.cfg, cams = load_config(CONFIG_PATH)
+        except Exception as e:
+            print_error(f"Ignoring unreadable config {CONFIG_PATH}: {e}")
+            self.cfg, cams = dict(DEFAULTS), []
+        self._store_camera_settings(cams)
 
-        self.selected_resolution = resolution
+        self._build_ui()
+        self.sync_cameras()
+        self.repaint_timer = QTimer(self, timeout=self.tick)
+        self.repaint_timer.start(33)
+        self.hotplug_timer = QTimer(self, timeout=self.sync_cameras)  # hot-swap: watch for (un)plugged cameras
+        self.hotplug_timer.start(2000)
+        self.statusBar().showMessage("Double-click a camera to focus it · right-click for options", 8000)
 
-        self.GlobalControlDialog = GlobalControlDialog
-        self.ScreenshotDialog = ScreenshotDialog
-        
-        print_info(f"Initializing ManyCamFlux with resolution {resolution}")
+    # ---------- UI ----------
+    def _build_ui(self):
+        self.flux = QWidget()
+        self.grid = QGridLayout(self.flux)
+        self.grid.setSpacing(6)
+        self.grid.setContentsMargins(6, 6, 6, 6)
+        self.empty = QLabel("No camera detected.\nPlug one in, it will show up automatically.", self.flux)
+        self.empty.setAlignment(Qt.AlignCenter)
+        self.empty.setEnabled(False)
+        self.setCentralWidget(self.flux)
+        self.flux.installEventFilter(self)
+        self.layout_timer = QTimer(self, singleShot=True, timeout=self.update_grid_layout)
 
-        # Detect available cameras
-        print_debug("Scanning for available cameras...")
-        self.cam_indices = get_available_cameras()
-        if not self.cam_indices:
-            print_error("No cameras detected. Application will exit.")
-            import sys
-            sys.exit()
-        else:
-            print_success(f"Found {len(self.cam_indices)} camera(s): {self.cam_indices}")
+        self.panel = CameraPanel(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(self.panel)
+        self.dock = QDockWidget("Cameras", self)
+        self.dock.setObjectName("cameras")
+        self.dock.setMinimumWidth(self.panel.minimumSizeHint().width() + 20)
+        self.dock.setWidget(scroll)
+        self.dock.setTitleBarWidget(self._dock_title_bar())
+        self.addDockWidget(Qt.RightDockWidgetArea, self.dock)
 
-        self.num_cam = len(self.cam_indices)
-        self.caps = [cv2.VideoCapture(idx) for idx in self.cam_indices]
-        print_debug("Camera capture devices initialized")
+        tb = QToolBar("Main")
+        tb.setMovable(False)
+        tb.setIconSize(QSize(18, 18))
+        tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.addToolBar(tb)
+        self.toolbar = tb
 
-        # Set camera resolution for capture (not display)
-        for idx, cap in enumerate(self.caps):
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
-            print_debug(f"Camera {idx} resolution set to {resolution[0]}x{resolution[1]}")
+        self.res_combo = QComboBox()
+        self.res_combo.setToolTip("Resolution of ALL cameras, up to the best native one "
+                                  "(each camera is limited to its own native resolution)")
+        self._natives = None
+        self._select_resolution(self.cfg["resolution"])
+        self.res_combo.currentIndexChanged.connect(lambda i: self.set_resolution(self.res_combo.choices[i][0]))
+        tb.addWidget(self.res_combo)
+        self.ratio_cb = QCheckBox("Keep ratio")
+        self.ratio_cb.setChecked(self.cfg["keep_aspect_ratio"])
+        self.ratio_cb.toggled.connect(self.set_keep_aspect)
+        tb.addWidget(self.ratio_cb)
+        tb.addSeparator()
+        self._action(tb, "camera", "Snapshot", self.snapshot_all, "S", "Save one grid image of all visible cameras")
+        self.tl_action = self._action(tb, "timer", "Timelapse", self.toggle_timelapse, "T",
+                                      "Save images at a regular interval", checkable=True)
+        self.rec_action = self._action(tb, "record", "Record", self.toggle_video, "R", "Record video", checkable=True)
+        tb.addSeparator()
+        self._action(tb, "library", "Recordings", self.show_recordings, "Ctrl+L", "Browse and play recordings")
+        self._action(tb, "folder", "Open folder", self.open_output_folder, "Ctrl+O", "Open the output folder")
+        self._action(tb, "settings", "Settings", self.show_capture_settings, "Ctrl+,", "Capture settings")
+        tb.addSeparator()
+        panel = self.dock.toggleViewAction()
+        panel.setText("Cameras")
+        panel.setIcon(icon("sidebar"))
+        panel.setShortcut("Ctrl+B")
+        panel.setToolTip("Show/hide the Cameras panel (Ctrl+B)")
+        tb.addAction(panel)
+        self._action(tb, "fullscreen", "Fullscreen", self.toggle_fullscreen, "F11", "Toggle fullscreen")
+        self._action(tb, "help", "Help", self.show_about, "F1", "Version, shortcuts and help")
 
-        # Create a widget for each camera
-        self.cam_widgets = [CamFeedWidget(cap, self, f"Camera {idx}") for idx, cap in enumerate(self.caps)]
-        self.visible_flags = [True] * self.num_cam
+        self.rec_label = QLabel()
+        self.count_label = QLabel()
+        self.render_bar = QProgressBar()
+        self.render_bar.setRange(0, 1000)
+        self.render_bar.setFixedWidth(260)
+        self.render_cancel = QToolButton()
+        self.render_cancel.setIcon(icon("close"))
+        self.render_cancel.setAutoRaise(True)
+        self.render_cancel.setToolTip("Cancel rendering")
+        self.render_cancel.clicked.connect(lambda: [job.cancel() for job in self.renders])
+        for w in (self.rec_label, self.render_bar, self.render_cancel, self.count_label):
+            self.statusBar().addPermanentWidget(w)
+        self.render_bar.hide()
+        self.render_cancel.hide()
 
-        # Layout for feeds with stretch factors to permettre le redimensionnement
-        self.flux_layout = QGridLayout()
-        self.flux_layout.setSpacing(5)
-        
-        self.flux_container = QWidget()
-        self.flux_container.setLayout(self.flux_layout)
-        
-        main_layout = QVBoxLayout()
-        main_layout.addWidget(self.flux_container, 1)
+    def _dock_title_bar(self):
+        """Own title bar: Qt's float/close buttons are tiny, especially on high-DPI screens.
+        Everything but the buttons lets mouse events through, so the whole bar is a drag handle."""
+        bar = QWidget()
+        bar.setObjectName("dockTitle")
+        bar.setAttribute(Qt.WA_StyledBackground)  # let the theme paint it (hover highlight)
+        bar.setMinimumHeight(40)
+        bar.setCursor(Qt.OpenHandCursor)
+        bar.setToolTip("Drag to move or detach the panel · double-click to detach / dock")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(8, 4, 4, 4)
+        grip = QLabel()
+        grip.setPixmap(icon("grip").pixmap(QSize(16, 16)))
+        title = QLabel("Cameras")
+        font = title.font()
+        font.setBold(True)
+        title.setFont(font)
+        for w in (grip, title):  # a QLabel would swallow the press and the dock would never start dragging
+            w.setAttribute(Qt.WA_TransparentForMouseEvents)
+        layout.addWidget(grip)
+        layout.addWidget(title, 1)
+        buttons = (("float", "Detach / dock the panel", lambda: self.dock.setFloating(not self.dock.isFloating())),
+                   ("close", "Close the panel (Ctrl+B)", self.dock.close))
+        for name, tip, slot in buttons:
+            b = QToolButton()
+            b.setIcon(icon(name))
+            b.setIconSize(QSize(18, 18))
+            b.setAutoRaise(True)
+            b.setToolTip(tip)
+            b.setCursor(Qt.ArrowCursor)
+            b.clicked.connect(slot)
+            layout.addWidget(b)
+        return bar
 
-        # Settings and Capture buttons side by side
-        button_layout = QHBoxLayout()
-        self.global_params_button = QPushButton("Settings")
-        self.global_params_button.clicked.connect(self.show_global_params)
-        button_layout.addWidget(self.global_params_button)
+    def _best_native(self):
+        """Largest native resolution among the cameras; None while one is still unknown (no limit yet)."""
+        natives = [f.camera.native for f in self.feeds.values()]
+        if not natives or None in natives:
+            return None
+        return max(natives, key=lambda r: r[0] * r[1])
 
-        self.screenshot_button = QPushButton("Capture")
-        self.screenshot_button.clicked.connect(self.show_screenshot_dialog)
-        button_layout.addWidget(self.screenshot_button)
-        
-        self.snapshot_button = QPushButton("Snapshot")
-        self.snapshot_button.clicked.connect(self.take_snapshot_all)
-        button_layout.addWidget(self.snapshot_button)
+    def _select_resolution(self, res):
+        """Show res in the toolbar combo (limited to the best native one). Does not apply it."""
+        fill_resolutions(self.res_combo, self._best_native(), res)
 
-        main_layout.addLayout(button_layout)
-
-        # Back button to exit fullscreen mode
-        self.back_button = QPushButton("Back")
-        self.back_button.clicked.connect(self.exit_fullscreen)
-        self.back_button.setVisible(False)
-        main_layout.addWidget(self.back_button)
-
-        self.setLayout(main_layout)
-        
-        # Définir une taille de fenêtre par défaut généreuse
-        self.resize(1024, 768)
-        
-        self.update_grid_layout()
-
-        # Timer to refresh display
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_frames)
-        self.timer.start(30)
-
-        # Load configuration at startup if it exists
-        self.load_config_at_startup()
-    
-    def take_snapshot_all(self):
-        
-        snapshot_folder = os.path.join(os.path.expanduser("~"), "Pictures", "ManyCamFlux_snapshots")
-        if not os.path.exists(snapshot_folder):
-            os.makedirs(snapshot_folder)
-            print_debug(f"Created snapshot directory: {snapshot_folder}")
-        
-        timestamp = QDateTime.currentDateTime().toString("yyyyMMdd_hhmmss")
-        filename = os.path.join(snapshot_folder, f"snapshot_all_{timestamp}.jpg")
-        print_info(f"Taking snapshot of all cameras to {filename}")
-        
-        self.take_screenshot(filename)
-        
-        print_success(f"Snapshot saved: {filename}")
-        QMessageBox.information(self, "Snapshot", f"Snapshot de toutes les caméras sauvegardé:\n{filename}")
-        
-        if os.path.exists(snapshot_folder):
-            if os.name == 'nt':  # Windows
-                print_debug(f"Opening folder in explorer: {snapshot_folder}")
-                subprocess.Popen(['explorer', snapshot_folder])
-
-    def show_global_params(self):
-        dialog = self.GlobalControlDialog(self)
-        dialog.exec_()
-
-    def show_screenshot_dialog(self):
-        dialog = self.ScreenshotDialog(self)
-        dialog.exec_()
-
-    def set_camera_name(self, idx, name):
-        old_name = self.cam_widgets[idx].name
-        self.cam_widgets[idx].name = name
-        print_debug(f"Camera {idx} renamed: '{old_name}' -> '{name}'")
-        self.update_grid_layout()
-
-    def set_brightness(self, idx, value):
-        self.cam_widgets[idx].brightness = value
-        print_debug(f"Camera {idx} brightness set to {value}")
-
-    def set_contrast(self, idx, value):
-        self.cam_widgets[idx].contrast = value
-        print_debug(f"Camera {idx} contrast set to {value}")
-        
-    def set_saturation(self, idx, value):
-        self.cam_widgets[idx].saturation = value
-        print_debug(f"Camera {idx} saturation set to {value}")
-
-    def rotate_camera(self, idx, angle):
-        old_angle = self.cam_widgets[idx].rotation_angle
-        self.cam_widgets[idx].rotation_angle = (old_angle + angle) % 360
-        print_debug(f"Camera {idx} rotated: {old_angle}° -> {self.cam_widgets[idx].rotation_angle}°")
-        
-    def update_frames(self):
-        for idx, widget in enumerate(self.cam_widgets):
-            if self.visible_flags[idx]:
-                widget.update_frame()
-
-    def toggle_camera(self, idx, state):
-        self.visible_flags[idx] = (state == Qt.Checked)
-        self.cam_widgets[idx].setVisible(self.visible_flags[idx])
-        self.update_grid_layout()
-        print_debug(f"Camera {idx} visibility set to {self.visible_flags[idx]}")
-
-    def update_grid_layout(self):
-        # Clear current layout
-        while self.flux_layout.count():
-            item = self.flux_layout.takeAt(0)
-            if item.widget():
-                self.flux_layout.removeWidget(item.widget())
-        
-        # Get visible widgets
-        visible_widgets = [w for idx, w in enumerate(self.cam_widgets) if self.visible_flags[idx]]
-        n = len(visible_widgets)
-        if n == 0:
+    def _check_natives(self):
+        """Native resolutions arrive ~1 s after a camera opens: then limit the choices to them."""
+        natives = tuple((dev, f.camera.native) for dev, f in self.feeds.items())
+        if natives == self._natives:
             return
-        
-        container_width = self.flux_container.width()
-        container_height = self.flux_container.height()
-        
-        # Calculate optimal columns based on square root
-        optimal_cols = int(np.sqrt(n))
-        
-        # Adjust columns based on window ratio and parity
-        window_ratio = container_width / max(1, container_height)
-        
-        # Specific handling by parity
-        if n % 2 == 0:  # Even count
-            if window_ratio > 2.4:  # Very wide window
-                optimal_cols = min(n, optimal_cols + 2)
-            # Don't increase for standard ratio (16:9)
-        else:  # Odd count
-            if window_ratio > 2.0:  # Very wide window
-                optimal_cols = min(n, optimal_cols + 2)
-            elif window_ratio > 0.8:  # For 16:9 screens
-                optimal_cols = min(n, optimal_cols + 1)
-        
-        # Common for both parities
-        if window_ratio < 0.8:  # Tall window
-            optimal_cols = max(1, optimal_cols - 1)
-         
-        # Ensure valid column count
-        cols = max(1, min(n, optimal_cols))
-        rows = (n + cols - 1) // cols
-        
-        print_debug(f"Responsive layout: {rows} rows, {cols} columns for {n} cameras (window ratio: {window_ratio:.2f})")
-        
-        # Place widgets
-        for i, widget in enumerate(visible_widgets):
-            row = i // cols
-            col = i % cols
-            
-            # Special case: last row with odd cameras
-            if row == rows - 1 and n % cols != 0:
-                # Camera count in last row
-                last_row_cameras = n % cols
-                # If camera is in last row
-                if i >= n - last_row_cameras:
-                    # Center cameras in last row
-                    cols_in_last_row = n - (rows - 1) * cols
-                    col_span = 1
-                    # If last camera with free space
-                    if i == n - 1 and cols_in_last_row < cols:
-                        # Extend across remaining columns
-                        col_span = cols - col
-                    
-                    # Center by offsetting start point
-                    start_col = (cols - cols_in_last_row) // 2
-                    self.flux_layout.addWidget(widget, row, start_col + (i - (n - cols_in_last_row)), 1, col_span)
-                else:
-                    self.flux_layout.addWidget(widget, row, col)
-            else:
-                # Standard case for filled rows
-                self.flux_layout.addWidget(widget, row, col)
+        self._natives = natives
+        for f in self.feeds.values():
+            cam = f.camera
+            if not fits(cam.resolution, cam.native):
+                cam.resolution = tuple(cam.native)  # the driver already delivers its native mode
+        self.cfg["resolution"] = list(clamp(self.cfg["resolution"], self._best_native()))
+        self._select_resolution(self.cfg["resolution"])
+        if self.selected:
+            self.panel.set_camera(self.selected)
+
+    def _action(self, toolbar, icon_name, text, slot, shortcut, tip, checkable=False):
+        action = QAction(icon(icon_name), text, self, checkable=checkable)
+        action.setShortcut(shortcut)
+        action.setToolTip(f"{tip} ({shortcut})")
+        action.triggered.connect(slot)
+        toolbar.addAction(action)
+        if checkable:
+            toolbar.widgetForAction(action).setObjectName("rec")  # red when active (see theme)
+        return action
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.update_grid_layout()
-        self.resize_timer.start(200)
+        # narrow window: icons only, so every toolbar button stays reachable
+        self.toolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon if self.width() >= 1150 else Qt.ToolButtonIconOnly)
 
-    def show_fullscreen(self, widget):
-        widget.fullscreen_mode = True
-        self.back_button.setVisible(True)
-        # Hide other widgets
-        for idx, w in enumerate(self.cam_widgets):
-            if w != widget:
-                w.hide()
-        self.showFullScreen()
-        self.update_grid_layout()
-        print_debug(f"Entering fullscreen mode for {widget.name}")
-
-    def exit_fullscreen(self):
-        self.back_button.setVisible(False)
-        self.showNormal()
-        for widget in self.cam_widgets:
-            widget.fullscreen_mode = False
-            widget.show()
-        self.update_grid_layout()
-        print_debug("Exiting fullscreen mode")
+    def eventFilter(self, obj, event):
+        if obj is self.flux and event.type() == QEvent.Resize:
+            self.layout_timer.start(60)
+        return False
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
-            self.exit_fullscreen()
+            if self.focused:
+                self.toggle_focus(self.focused)
+            elif self.isFullScreen():
+                self.showNormal()
+        else:
+            super().keyPressEvent(event)
+
+    def toggle_fullscreen(self):
+        self.showNormal() if self.isFullScreen() else self.showFullScreen()
+
+    def tick(self):
+        self._check_natives()
+        for feed in self.feeds.values():
+            if feed.isVisible():
+                feed.refresh()
+        if self.video is not None and not self.video.is_alive():
+            error = self.video.error
+            self.toggle_video()
+            QMessageBox.warning(self, "Recording", f"Video recording stopped:\n{error}")
+        for rec, stop in ((self.video, self.toggle_video), (self.timelapse, self.toggle_timelapse)):
+            if rec is not None and rec.limit and rec.elapsed() >= rec.limit:
+                stop()
+                self.statusBar().showMessage(f"Stopped automatically after {hms(rec.limit)}: {rec.folder}", 10000)
+        text = ""
+        if self.video is not None:
+            v = self.video
+            limit = f" / {hms(v.limit)}" if v.limit else ""
+            text += (f"<span style='color:#ff5a5f'>●</span> REC {hms(v.elapsed())}{limit}"
+                     f" · {v.count} frames")
+            if v.motion is not None and v.written + v.skipped:
+                text += f" · {100 * v.skipped // (v.written + v.skipped)}% static cut"
+            text += "&nbsp;&nbsp;&nbsp;"
+        if self.timelapse is not None:
+            t = self.timelapse
+            text += f"Timelapse #{t.count} · next in {t.remaining():.0f}s"
+            if t.limit:
+                text += f" · ends in {hms(max(0, t.limit - t.elapsed()))}"
+        if text != self.rec_label.text():
+            self.rec_label.setText(text)
+        if self.renders:
+            self._update_renders()
+
+    def start_render(self, images, path, fps):
+        job = RenderJob(images, path, fps)
+        self.renders.append(job)
+        job.start()
+        self._update_renders()
+
+    def _update_renders(self):
+        for job in [j for j in self.renders if not j.is_alive()]:
+            self.renders.remove(job)
+            if job.error:
+                QMessageBox.warning(self, "Render", f"Rendering failed:\n{job.error}")
+            elif job.cancelled:
+                self.statusBar().showMessage("Rendering cancelled", 5000)
+            else:
+                self.notify(f"Rendered: {job.path}")
+                if self.recordings is not None and self.recordings.isVisible():
+                    self.recordings.refresh()
+        busy = bool(self.renders)
+        self.render_bar.setVisible(busy)
+        self.render_cancel.setVisible(busy)
+        if busy:
+            n = len(self.renders)
+            self.render_bar.setFormat(f"Rendering {n} video{'s' if n > 1 else ''}… %p%")
+            self.render_bar.setValue(int(1000 * sum(j.progress for j in self.renders) / n))
+
+    def show_recordings(self):
+        if self.recordings is None:
+            from recordings import RecordingsDialog  # loaded on first use: keeps startup fast
+            self.recordings = RecordingsDialog(self)
+        self.recordings.refresh()
+        self.recordings.show()
+        self.recordings.raise_()
+        self.recordings.activateWindow()
+
+    def notify(self, message):
+        print_success(message)
+        self.statusBar().showMessage(message, 6000)
+
+    # ---------- cameras ----------
+    @property
+    def keep_aspect_ratio(self):
+        return self.cfg["keep_aspect_ratio"]
+
+    @property
+    def recording(self):
+        return self.video is not None or self.timelapse is not None
+
+    def _store_camera_settings(self, cams):
+        """Settings are matched to cameras by device id; old configs (no id) by order."""
+        self.saved_cams = {c["device"]: c for c in cams if "device" in c}
+        self.legacy_cams = [c for c in cams if "device" not in c]
+
+    def sync_cameras(self):
+        present = list_cameras()
+        ids = {dev for dev, _, _ in present}
+        gone = [dev for dev in self.feeds if dev not in ids]
+        for dev in gone:
+            self.remove_camera(dev)
+        added = False
+        for dev, desc, index in present:
+            if dev in self.feeds:
+                self.feeds[dev].camera.index = index  # indices shift when another camera is unplugged
+            else:
+                self.add_camera(dev, desc, index)
+                added = True
+        if gone or added:
+            self.update_grid_layout()
+            self.panel.refresh()
+            n = len(self.feeds)
+            self.count_label.setText(f"{n} camera{'s' if n != 1 else ''}")
+
+    def add_camera(self, device, description, index):
+        cam = Camera(device, description, index, tuple(self.cfg["resolution"]))
+        if any(f.camera.label == cam.label for f in self.feeds.values()):
+            cam.label = f"{description} ({len(self.feeds) + 1})"
+        saved = self.saved_cams.pop(device, None) or (self.legacy_cams.pop(0) if self.legacy_cams else None)
+        if saved:
+            cam.apply_settings(saved)
+        cam.keep_aspect = self.keep_aspect_ratio
+        self.feeds[device] = CamFeedWidget(cam, self, self.flux)
+        cam.start()
+        self.notify(f"Camera connected: {cam.label}")
+
+    def remove_camera(self, device):
+        feed = self.feeds.pop(device)
+        cam = feed.camera
+        cam.stop()
+        self.saved_cams[device] = cam.settings()  # restored if it is plugged back in
+        if self.focused is feed:
+            self.focused = None
+        if self.selected is cam:
+            self.selected = None
+        feed.deleteLater()
+        print_warning(f"Camera disconnected: {cam.label}")
+        self.statusBar().showMessage(f"Camera disconnected: {cam.label}", 6000)
+
+    def update_grid_layout(self):
+        while self.grid.count():
+            self.grid.takeAt(0)
+        for i in range(self.grid.rowCount()):
+            self.grid.setRowStretch(i, 0)
+        for i in range(self.grid.columnCount()):
+            self.grid.setColumnStretch(i, 0)
+        feeds = [self.focused] if self.focused else [f for f in self.feeds.values() if f.camera.visible]
+        for f in self.feeds.values():
+            f.setVisible(f in feeds)
+        self.empty.setVisible(not feeds)
+        if not feeds:
+            self.empty.setText("No camera detected.\nPlug one in, it will show up automatically." if not self.feeds
+                               else "All cameras are hidden.\nShow them from the Cameras panel.")
+            self.grid.addWidget(self.empty, 0, 0)
+            self.grid.setRowStretch(0, 1)
+            self.grid.setColumnStretch(0, 1)
+            return
+        ratios = [f.camera.frame.shape[1] / f.camera.frame.shape[0] for f in feeds if f.camera.frame is not None]
+        res = self.cfg["resolution"]
+        aspect = sum(ratios) / len(ratios) if ratios else res[0] / res[1]
+        rows, cols = best_grid(len(feeds), self.flux.width(), self.flux.height(), aspect)
+        last_row = len(feeds) - (rows - 1) * cols
+        # each camera spans 2 grid columns so an incomplete last row can be centred by a half-cell offset
+        for i, f in enumerate(feeds):
+            r, c = divmod(i, cols)
+            offset = cols - last_row if r == rows - 1 else 0
+            self.grid.addWidget(f, r, 2 * c + offset, 1, 2)
+        for r in range(rows):
+            self.grid.setRowStretch(r, 1)
+        for c in range(2 * cols):
+            self.grid.setColumnStretch(c, 1)
+
+    def select_camera(self, cam):
+        self.selected = cam
+        self.panel.set_camera(cam)
+
+    def toggle_focus(self, feed):
+        self.focused = None if self.focused is feed else feed
+        self.update_grid_layout()
+
+    def set_visible(self, cam, visible):
+        cam.visible = visible
+        if self.focused and self.focused.camera is cam:
+            self.focused = None
+        self.update_grid_layout()
+        if self.selected is cam:
+            self.panel.set_camera(cam)
+
+    def rotate(self, cam, delta):
+        cam.rotation = (cam.rotation + delta) % 360
+        if self.selected is cam:
+            self.panel.set_camera(cam)
+        QTimer.singleShot(300, self.update_grid_layout)  # once a rotated frame exists
+
+    def set_flip(self, cam, attr, on):
+        setattr(cam, attr, on)
+        if self.selected is cam:
+            self.panel.set_camera(cam)
+
+    def set_resolution(self, res):
+        """Toolbar: the default resolution, applied to every camera."""
+        if list(res) == list(self.cfg["resolution"]):
+            return
+        self.cfg["resolution"] = list(res)
+        for f in self.feeds.values():
+            f.camera.reopen(clamp(res, f.camera.native))  # never above what each camera can do
+        if self.selected:
+            self.panel.set_camera(self.selected)
+        print_info(f"Resolution of all cameras set to {res[0]}x{res[1]} (at most their native one)")
+        QTimer.singleShot(2000, self.update_grid_layout)
+
+    def set_camera_resolution(self, cam, res):
+        res = clamp(res, cam.native)
+        if res != tuple(cam.resolution):
+            cam.reopen(tuple(res))
+            print_info(f"{cam.label}: resolution set to {res[0]}x{res[1]}")
+            QTimer.singleShot(2000, self.update_grid_layout)
+
+    def set_keep_aspect(self, on):
+        self.cfg["keep_aspect_ratio"] = on
+        for f in self.feeds.values():
+            f.camera.keep_aspect = on
+            f.update()
+
+    # ---------- capture ----------
+    def shots(self):
+        """Latest frame of each visible camera: [(device, label, frame, frame_id)]. Thread-safe."""
+        cams = [f.camera for f in list(self.feeds.values())]
+        return [(c.device, c.label, c.frame, c.frame_id) for c in cams if c.visible and c.frame is not None]
+
+    def compose(self, shots, max_width=None):
+        names = [s[1] for s in shots] if self.cfg["show_labels_in_screenshots"] else None
+        # cell = largest camera frame (as landscape): cameras can each have their own resolution
+        w = max(max(s[2].shape[:2]) for s in shots)
+        h = max(min(s[2].shape[:2]) for s in shots)
+        cols = math.ceil(math.sqrt(len(shots)))
+        if max_width and cols * w > max_width:  # shrink cells before composing: far cheaper than resizing after
+            scale = max_width / (cols * w)
+            w, h = int(w * scale) // 2 * 2, int(h * scale) // 2 * 2
+        return compose_grid([s[2] for s in shots], names, (w, h), self.cfg["adaptive_resolution"])
+
+    def compose_video(self, shots):
+        # a 4K grid cannot be encoded in real time (measured 19 fps for 7 cameras); 1080p width keeps 30 fps
+        return self.compose(shots, max_width=1920)
+
+    def output_dir(self, sub):
+        path = os.path.join(self.cfg["output_folder"] or DEFAULT_OUTPUT, sub)
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def snapshot_all(self):
+        shots = self.shots()
+        if not shots:
+            self.statusBar().showMessage("No camera image to capture", 4000)
+            return
+        path = os.path.join(self.output_dir("snapshots"), f"snapshot_all_{stamp()}.jpg")
+        save_async(path, lambda: self.compose(shots))
+        self.notify(f"Snapshot saved: {path}")
+
+    def snapshot_camera(self, cam):
+        frame = cam.frame
+        if frame is None:
+            return
+        label = cam.label if self.cfg["show_labels_in_screenshots"] else None
+        path = os.path.join(self.output_dir("snapshots"), f"snapshot_{safe_name(cam.label)}_{stamp()}.jpg")
+        save_async(path, lambda: draw_label(frame.copy(), label) if label else frame)
+        self.notify(f"Snapshot saved: {path}")
+
+    def toggle_timelapse(self):
+        try:
+            if self.timelapse:
+                n, folder = self.timelapse.stop(), self.timelapse.folder
+                self.timelapse = None
+                self.notify(f"Timelapse stopped: {n} frames in {folder}")
+            else:
+                folder = self.output_dir(f"timelapse_{stamp()}")
+                self.timelapse = Timelapse(folder, self.cfg["timelapse_interval"], self.cfg["timelapse_per_camera"],
+                                           self.shots, self.compose)
+                self.timelapse.limit = self.cfg["timelapse_duration"]
+                self.notify(f"Timelapse started every {self.cfg['timelapse_interval']:g}s → {folder}")
+        except OSError as e:
+            QMessageBox.warning(self, "Timelapse", str(e))
+        self.tl_action.setChecked(self.timelapse is not None)
+
+    def toggle_video(self):
+        try:
+            if self.video:
+                n, folder, dropped = self.video.stop(), self.video.folder, self.video.dropped
+                self.video = None
+                lost = f" ({dropped} dropped: encoder too slow, see frames.csv)" if dropped else ""
+                if self.recordings is not None and self.recordings.isVisible():
+                    self.recordings.refresh()
+                self.notify(f"Recording stopped: {n} frames in {folder}{lost}")
+            else:
+                folder = self.output_dir(f"video_{stamp()}")
+                c = self.cfg
+                self.video = VideoRecorder(folder, c["video_fps"], c["video_per_camera"], self.shots, self.compose_video,
+                                           motion=c["video_motion_threshold"] if c["video_motion_only"] else None,
+                                           timestamp=c["video_timestamp"],
+                                           segment_minutes=c["video_segment_minutes"] if c["video_split"] else None)
+                self.video.limit = c["video_duration"]
+                self.video.start()
+                risk = "" if self.cfg["video_split"] else " (single file: unreadable if interrupted)"
+                self.notify(f"Recording at {self.cfg['video_fps']} fps → {folder}{risk}")
+        except OSError as e:
+            QMessageBox.warning(self, "Recording", str(e))
+        self.rec_action.setChecked(self.video is not None)
+
+    def open_output_folder(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(self.output_dir("")))
+
+    def show_capture_settings(self):
+        dialog = CaptureSettingsDialog(self.cfg, self)
+        if dialog.exec_():
+            self.cfg.update(dialog.values())
+            self.save_config()
+            for f in self.feeds.values():
+                f.update()
+
+    def show_about(self):
+        QMessageBox.about(self, "About ManyCamFlux", f"""
+            <h2>ManyCamFlux {VERSION}</h2>
+            <p>View, capture and record many webcams at once.</p>
+            <table cellspacing="4">
+            <tr><td><b>S</b></td><td>Snapshot of all cameras</td></tr>
+            <tr><td><b>T</b> / <b>R</b></td><td>Start/stop timelapse / video</td></tr>
+            <tr><td><b>Ctrl+L</b></td><td>Recordings (play, rename, delete, render)</td></tr>
+            <tr><td><b>Ctrl+B</b></td><td>Cameras panel (drag its title bar to detach it)</td></tr>
+            <tr><td><b>Ctrl+,</b></td><td>Capture settings</td></tr>
+            <tr><td><b>F11</b> / <b>Esc</b></td><td>Fullscreen / back to the grid</td></tr>
+            <tr><td>Double-click</td><td>Show one camera alone</td></tr>
+            </table>
+            <p>Output: {self.output_dir("")}<br>Settings: {CONFIG_PATH}</p>
+            <p><a href="{REPO_URL}">{REPO_URL}</a></p>""")
+
+    # ---------- config ----------
+    def save_config(self, notify=False):
+        cams = [f.camera.settings() for f in self.feeds.values()] + list(self.saved_cams.values()) + self.legacy_cams
+        data = {"global_settings": self.cfg, "cameras": cams}
+        try:
+            os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+            tmp = CONFIG_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+            os.replace(tmp, CONFIG_PATH)  # atomic: a crash mid-write never corrupts the config
+            if notify:
+                self.notify(f"Configuration saved: {CONFIG_PATH}")
+        except OSError as e:
+            print_error(f"Failed to save configuration: {e}")
+            QMessageBox.warning(self, "Configuration", f"Failed to save configuration:\n{e}")
+
+    def import_config(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import configuration", os.path.dirname(CONFIG_PATH),
+                                              "JSON files (*.json)")
+        if not path:
+            return
+        try:
+            cfg, cams = load_config(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Configuration", f"Failed to load configuration:\n{e}")
+            return
+        self.cfg.update({k: v for k, v in cfg.items() if k not in ("resolution", "keep_aspect_ratio")})
+        self._select_resolution(cfg["resolution"])  # first: it applies to all, per-camera settings come after
+        self.set_resolution(self.res_combo.choices[self.res_combo.currentIndex()][0])
+        self.ratio_cb.setChecked(cfg["keep_aspect_ratio"])
+        self._store_camera_settings(cams)
+        for f in self.feeds.values():
+            cam = f.camera
+            saved = self.saved_cams.pop(cam.device, None) or (self.legacy_cams.pop(0) if self.legacy_cams else None)
+            if saved:
+                before = cam.resolution
+                cam.apply_settings(saved)
+                if cam.resolution != before:
+                    cam.reopen(clamp(cam.resolution, cam.native))
+        self.update_grid_layout()
+        self.panel.refresh()
+        self.notify(f"Configuration imported: {path}")
 
     def closeEvent(self, event):
-        self.timer.stop()
-        
-        import time
-        time.sleep(0.1)
-        
-        for cap in self.caps:
-            if cap.isOpened():
-                cap.release()
-        
-        for widget in self.cam_widgets:
-            widget.setParent(None)
-        self.cam_widgets.clear()
-        
+        self.repaint_timer.stop()
+        self.hotplug_timer.stop()
+        if self.video:
+            self.toggle_video()
+        if self.timelapse:
+            self.toggle_timelapse()
+        self.save_config()
+        for job in self.renders:  # a half-rendered file is deleted by the job itself
+            job.cancel()
+            job.join(timeout=3)
+        cams = [f.camera for f in self.feeds.values()]
+        for cam in cams:
+            cam.stop()
+        for cam in cams:
+            cam.join(timeout=1)
         event.accept()
-
-    def take_screenshot(self, filename):
-        # Get visible widgets
-        visible_widgets = [w for idx, w in enumerate(self.cam_widgets) if self.visible_flags[idx]]
-        n = len(visible_widgets)
-        if n == 0:
-            return
-    
-        # Calculate grid size
-        grid_size = int(np.ceil(np.sqrt(n)))
-        rows = (n + grid_size - 1) // grid_size
-        cols = min(n, grid_size)
-    
-        # Base dimensions
-        base_h, base_w = self.selected_resolution[1], self.selected_resolution[0]
-        
-        if self.adaptive_resolution == True:  # Condition inverted as requested
-            # Adaptive cells for rotated cameras
-            cell_dimensions = []
-            for widget in visible_widgets:
-                # Check if camera is rotated 90° or 270°
-                rotated_90_or_270 = widget.rotation_angle in [90, 270]
-                
-                if rotated_90_or_270:
-                    # For rotated cameras, invert width and height
-                    cell_dimensions.append((base_h, base_w))
-                else:
-                    # For normal cameras, keep standard resolution
-                    cell_dimensions.append((base_w, base_h))
-            
-            # Calculate max width for each column and max height for each row
-            col_widths = [0] * cols
-            row_heights = [0] * rows
-            
-            for i, (width, height) in enumerate(cell_dimensions):
-                row = i // cols
-                col = i % cols
-                col_widths[col] = max(col_widths[col], width)
-                row_heights[row] = max(row_heights[row], height)
-            
-            # Calculate final image dimensions
-            total_width = sum(col_widths)
-            total_height = sum(row_heights)
-            
-            # Create capture image with calculated dimensions
-            screenshot = np.zeros((total_height, total_width, 3), dtype=np.uint8)
-            
-            # Initial position
-            y_offset = 0
-            
-            # For each row
-            for row in range(rows):
-                x_offset = 0
-                
-                # For each column in this row
-                for col in range(cols):
-                    idx = row * cols + col
-                    if idx >= len(visible_widgets):
-                        break
-                        
-                    widget = visible_widgets[idx]
-                    
-                    # Calculate cell dimensions
-                    cell_width = col_widths[col]
-                    cell_height = row_heights[row]
-                    
-                    # Capture and process image
-                    ret, frame = widget.cap.read()
-                    if ret:
-                        # Apply adjustments
-                        frame = widget.apply_brightness_contrast(frame)
-                        frame = widget.apply_saturation(frame)
-                        
-                        # Check if camera is rotated 90° or 270°
-                        rotated_90_or_270 = widget.rotation_angle in [90, 270]
-                        
-                        if rotated_90_or_270:
-                            # For rotated images, invert dimensions for resizing
-                            frame = cv2.resize(frame, (cell_height, cell_width))
-                        else:
-                            frame = cv2.resize(frame, (cell_width, cell_height))
-                        
-                        # Apply rotation
-                        frame = widget.apply_rotation(frame)
-                        
-                        # Add camera name if enabled
-                        if self.show_labels_in_screenshots:
-                            h, w = frame.shape[:2]
-                            text_bar = np.zeros((30, w, 3), dtype=np.uint8)
-                            frame = np.vstack([frame, text_bar])
-                            
-                            cv2.putText(
-                                frame, 
-                                widget.name, 
-                                (10, frame.shape[0] - 10), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 
-                                0.7, 
-                                (255, 255, 255), 
-                                2
-                            )
-                        
-                        # Place image in cell (centered)
-                        h, w = frame.shape[:2]
-                        
-                        # Create temporary cell
-                        temp_cell = np.zeros((cell_height, cell_width, 3), dtype=np.uint8)
-                        
-                        # Calculate centering offsets
-                        offset_x = (cell_width - w) // 2
-                        offset_y = (cell_height - h) // 2
-                        
-                        # Check dimensions
-                        if offset_x >= 0 and offset_y >= 0:
-                            # Place centered image
-                            temp_cell[offset_y:offset_y+h, offset_x:offset_x+w] = frame
-                        else:
-                            # Resize if too large
-                            scale_h = cell_height / h
-                            scale_w = cell_width / w
-                            scale = min(scale_h, scale_w)
-                            
-                            new_h = int(h * scale)
-                            new_w = int(w * scale)
-                            
-                            resized_frame = cv2.resize(frame, (new_w, new_h))
-                            
-                            # Center resized image
-                            new_offset_x = (cell_width - new_w) // 2
-                            new_offset_y = (cell_height - new_h) // 2
-                            
-                            temp_cell[new_offset_y:new_offset_y+new_h, new_offset_x:new_offset_x+new_w] = resized_frame
-                        
-                        # Add cell to final image
-                        screenshot[y_offset:y_offset+cell_height, x_offset:x_offset+cell_width] = temp_cell
-                    
-                    # Next column position
-                    x_offset += cell_width
-                
-                # Next row position
-                y_offset += row_heights[row]
-        else:
-            # Fixed cell size (non-adaptive)
-            screenshot = np.zeros((rows * base_h, cols * base_w, 3), dtype=np.uint8)
-            
-            for idx, widget in enumerate(visible_widgets):
-                ret, frame = widget.cap.read()
-                if ret:
-                    # Apply basic adjustments
-                    frame = widget.apply_brightness_contrast(frame)
-                    frame = widget.apply_saturation(frame)
-                    
-                    # Check rotation
-                    rotated_90_or_270 = widget.rotation_angle in [90, 270]
-                    
-                    if rotated_90_or_270:
-                        # Invert dimensions for rotated cameras
-                        target_w, target_h = base_h, base_w
-                        frame = cv2.resize(frame, (target_h, target_w))
-                    else:
-                        # Standard resize
-                        frame = cv2.resize(frame, (base_w, base_h))
-                    
-                    # Apply rotation
-                    frame = widget.apply_rotation(frame)
-                    
-                    # Add camera name if enabled
-                    if self.show_labels_in_screenshots:
-                        h, w = frame.shape[:2]
-                        text_bar = np.zeros((30, w, 3), dtype=np.uint8)
-                        frame = np.vstack([frame, text_bar])
-                        
-                        cv2.putText(
-                            frame, 
-                            widget.name, 
-                            (10, frame.shape[0] - 10), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 
-                            0.7, 
-                            (255, 255, 255), 
-                            2
-                        )
-                    
-                    # Fit to cell if needed
-                    h, w = frame.shape[:2]
-                    if h > base_h or w > base_w:
-                        scale_h = base_h / h
-                        scale_w = base_w / w
-                        scale = min(scale_h, scale_w)
-                        
-                        new_h = int(h * scale)
-                        new_w = int(w * scale)
-                        frame = cv2.resize(frame, (new_w, new_h))
-                    
-                    # Create temporary cell
-                    temp_frame = np.zeros((base_h, base_w, 3), dtype=np.uint8)
-                    
-                    # Center image in cell
-                    offset_x = max(0, (base_w - frame.shape[1]) // 2)
-                    offset_y = max(0, (base_h - frame.shape[0]) // 2)
-                    
-                    # Check bounds
-                    frame_h, frame_w = frame.shape[:2]
-                    place_h = min(frame_h, base_h - offset_y)
-                    place_w = min(frame_w, base_w - offset_x)
-                    
-                    # Place in cell
-                    temp_frame[offset_y:offset_y+place_h, offset_x:offset_x+place_w] = frame[:place_h, :place_w]
-                    
-                    # Add to final image
-                    row = idx // cols
-                    col = idx % cols
-                    screenshot[row*base_h:(row+1)*base_h, col*base_w:(col+1)*base_w] = temp_frame
-    
-        cv2.imwrite(filename, screenshot)
-        print_success(f"Screenshot saved to {filename}")
-
-    def get_config_path(self):
-        """Send the path to the configuration file."""
-        config_dir = os.path.join(os.path.expanduser("~"), "Documents", "ManyCamFlux")
-        if not os.path.exists(config_dir):
-            os.makedirs(config_dir)
-            print_debug(f"Created configuration directory: {config_dir}")
-        return os.path.join(config_dir, "ManyCamFlux_config.json")
-
-    def save_config(self):
-        config = {
-            "global_settings": {
-                "show_labels_in_screenshots": self.show_labels_in_screenshots,
-                "keep_aspect_ratio": self.keep_aspect_ratio,
-                "adaptive_resolution": self.adaptive_resolution,
-            },
-            "cameras": []
-        }
-        for idx, widget in enumerate(self.cam_widgets):
-            config["cameras"].append({
-                "name": widget.name,
-                "brightness": widget.brightness,
-                "contrast": widget.contrast,
-                "saturation": widget.saturation,
-                "rotation_angle": widget.rotation_angle,
-                "visible": self.visible_flags[idx]
-            })
-        
-        config_path = self.get_config_path()
-        print_info(f"Saving configuration to {config_path}")
-        
-        try:
-            with open(config_path, 'w') as config_file:
-                json.dump(config, config_file, indent=4)
-            print_success("Configuration saved successfully")
-            QMessageBox.information(self, "Configuration", "Configuration saved")
-        except Exception as e:
-            print_error(f"Failed to save configuration: {str(e)}")
-            QMessageBox.warning(self, "Error", f"Failed to save configuration: {str(e)}")
-
-    def load_config(self):
-        
-        config_path, _ = QFileDialog.getOpenFileName(self, "Open Configuration File", "", "JSON Files (*.json)")
-        if not config_path:
-            print_debug("Configuration loading cancelled by user")
-            return
-            
-        print_info(f"Loading configuration from {config_path}")
-        
-        try:
-            with open(config_path, 'r') as config_file:
-                config = json.load(config_file)
-                for idx, cam_config in enumerate(config["cameras"]):
-                    if idx >= len(self.cam_widgets):
-                        print_warning(f"Config has more cameras ({len(config['cameras'])}) than available ({len(self.cam_widgets)})")
-                        break
-                        
-                    print_debug(f"Applying config to camera {idx}")
-                    self.cam_widgets[idx].name = cam_config["name"]
-                    self.cam_widgets[idx].brightness = cam_config["brightness"]
-                    self.cam_widgets[idx].contrast = cam_config["contrast"]
-                    if "saturation" in cam_config:
-                        self.cam_widgets[idx].saturation = cam_config["saturation"]
-                    self.cam_widgets[idx].rotation_angle = cam_config["rotation_angle"]
-                    self.visible_flags[idx] = cam_config["visible"]
-                
-                self.update_grid_layout()
-                print_success("Configuration loaded successfully")
-                QMessageBox.information(self, "Configuration", "Configuration loaded")
-        except Exception as e:
-            print_error(f"Failed to load configuration: {str(e)}")
-            QMessageBox.warning(self, "Error", f"Failed to load configuration: {str(e)}")
-
-    def load_config_at_startup(self):
-        config_path = self.get_config_path()        
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r') as config_file:
-                    config = json.load(config_file)
-                    
-                    if "global_settings" in config:
-                        if "show_labels_in_screenshots" in config["global_settings"]:
-                            self.show_labels_in_screenshots = config["global_settings"]["show_labels_in_screenshots"]
-                            print_debug(f"Loaded show_labels_in_screenshots: {self.show_labels_in_screenshots}")
-                        if "adaptive_resolution" in config["global_settings"]:
-                            self.adaptive_resolution = config["global_settings"]["adaptive_resolution"]
-                            print_debug(f"Loaded adaptive_resolution: {self.adaptive_resolution}")
-                    
-                    for idx, cam_config in enumerate(config["cameras"]):
-                        if idx < len(self.cam_widgets):
-                            self.cam_widgets[idx].name = cam_config["name"]
-                            self.cam_widgets[idx].brightness = cam_config["brightness"]
-                            self.cam_widgets[idx].contrast = cam_config["contrast"]
-                            if "saturation" in cam_config:
-                                self.cam_widgets[idx].saturation = cam_config["saturation"]
-                            self.cam_widgets[idx].rotation_angle = cam_config["rotation_angle"]
-                            self.visible_flags[idx] = cam_config["visible"]
-                    self.update_grid_layout()
-                    print_success("Configuration loaded successfully")
-            except Exception as e:
-                print_error(f"Failed to load configuration: {str(e)}")
