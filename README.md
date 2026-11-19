@@ -36,6 +36,15 @@ ManyCamFlux is a tiny project designed to manage multiple webcam feeds. It provi
 - **Focus & fullscreen**: double-click a camera to show it alone, `F11` for fullscreen, `Esc` to go back.
 - **Persistent settings**: saved automatically on exit (`~/Documents/ManyCamFlux/`), importable from a file.
 
+## Download (Windows)
+
+Two versions are available in the [latest release](https://github.com/MatisAgr/ManyCamFlux/releases/latest), nothing to install:
+
+| File | How to use it | Startup |
+|------|---------------|---------|
+| `ManyCamFlux_2.0_windows.zip` (**recommended**) | Unzip it, then run `ManyCamFlux.exe` inside the folder. Keep the `_internal` folder next to the `.exe`. | Fast |
+| `ManyCamFlux_2.0_portable.exe` | A single file: just run it. | Slower (it unpacks itself on every launch) |
+
 ## Requirements
 
 To run ManyCamFlux, you need the following Python packages:
@@ -114,14 +123,14 @@ To build your modifications of ManyCamFlux project into a standalone executable 
 
 
 3. **Run the executable**:
-    - After the compilation, the executable `(ManyCamFlux.exe)` will be located in the `dist` directory. You can run it directly from there.
-    - Only the `.exe` file is necessary for the standalone version. It can be portable and moved to another machine if needed.
+    - After the compilation, the executable is in `dist/ManyCamFlux/ManyCamFlux.exe`. You can run it directly from there.
+    - With `-D`, the `.exe` needs the `_internal` folder next to it: share the whole `dist/ManyCamFlux` folder (zipped). With `-F`, the `.exe` alone is enough (`dist/ManyCamFlux.exe`).
 
 **Note:**
 
 If PyInstaller is not recognized after installation, try this command:
 ```sh
-python -m PyInstaller -F -w --add-data="assets;assets" -i assets/icon.ico ManyCamFlux.py
+python -m PyInstaller -D -w --add-data="assets;assets" -i assets/icon.ico ManyCamFlux.py
 ```
 
 *Further updates and adjustments will follow.*
