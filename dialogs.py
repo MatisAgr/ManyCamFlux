@@ -272,15 +272,19 @@ class CaptureSettingsDialog(QDialog):
         self.threshold.setDecimals(1)
         self.threshold.setSingleStep(0.5)
         self.threshold.setSuffix(" % of the image")
-        self.threshold.setToolTip(
-            "How big a change must be to count as motion (lower = more sensitive).\n"
-            "In 1080p: a hand ≈ 0.6 %, a person far away ≈ 1.2 %, a person nearby ≈ 9 %.\n"
-            "1 % (default) suits most scenes; 2-3 % outdoors (leaves, rain).\n"
-            "Small light changes are ignored whatever the value; a light switched on always counts.")
+        self.threshold.setToolTip("How big a change must be to count as motion (lower = more sensitive)")
         self.threshold.setValue(cfg["video_motion_threshold"])
-        self.threshold.setEnabled(self.motion.isChecked())
-        self.motion.toggled.connect(self.threshold.setEnabled)
         form.addRow("Min. moving area", self.threshold)
+        tip = QLabel("💡 <b>Which value?</b> In 1080p, a hand ≈ 0.6 %, a person far away ≈ 1.2 %, "
+                     "a person nearby ≈ 9 %.<br><b>1 %</b> suits most scenes, <b>2-3 %</b> outdoors "
+                     "(leaves, rain). Small light changes are ignored whatever the value.")
+        tip.setWordWrap(True)
+        tip.setStyleSheet("QLabel { background: #1f2a3a; border: 1px solid #2d3f57; border-radius: 6px;"
+                          " padding: 6px 8px; color: #c8d4e6; } QLabel:disabled { color: #6b7280; }")
+        form.addRow("", tip)
+        for w in (self.threshold, tip):
+            w.setEnabled(self.motion.isChecked())
+            self.motion.toggled.connect(w.setEnabled)
         split_row = QHBoxLayout()
         self.split = QCheckBox("Split files every")
         self.split.setChecked(cfg["video_split"])
