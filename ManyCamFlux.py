@@ -1,138 +1,94 @@
-import sys
+import argparse
 import os
-from PyQt5.QtWidgets import (QApplication, QDialog, QVBoxLayout, QLabel, 
-                           QComboBox, QDialogButtonBox, QSplashScreen, 
-                           QCheckBox)
+import sys
+import traceback
+
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap, QFont, QIcon
+from PyQt5.QtGui import QColor, QFont, QIcon, QPalette, QPixmap
+from PyQt5.QtWidgets import QApplication, QSplashScreen
 
-from camera_widgets import CamFluxWidget
+from utils import VERSION, print_error, resource_path
 
-def resource_path(relative_path):
-    """Get absolute path to resource, works for dev and for PyInstaller
-    thx to : https://stackoverflow.com/questions/31836104/pyinstaller-and-onefile-how-to-include-an-image-in-the-exe-file"""
-    try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
-        base_path = sys._MEIPASS
-    except Exception:
-        # For dev
-        base_path = os.path.abspath("assets/")
-    
-    return os.path.join(base_path, relative_path)
+
+def log_exception(kind, value, tb):
+    # PyQt5 aborts the whole app on an exception in a slot unless an excepthook is set:
+    # log it instead, so a bug never kills a running (24 h) recording
+    print_error("".join(traceback.format_exception(kind, value, tb)))
+
+
+def apply_dark_theme(app):
+    app.setStyle("Fusion")
+    window, base, text, accent = QColor(37, 38, 42), QColor(27, 28, 31), QColor(225, 227, 231), QColor(53, 132, 228)
+    p = QPalette()
+    for role, color in ((QPalette.Window, window), (QPalette.WindowText, text), (QPalette.Base, base),
+                        (QPalette.AlternateBase, window), (QPalette.ToolTipBase, base), (QPalette.ToolTipText, text),
+                        (QPalette.Text, text), (QPalette.Button, window), (QPalette.ButtonText, text),
+                        (QPalette.Highlight, accent), (QPalette.HighlightedText, Qt.white), (QPalette.Link, accent)):
+        p.setColor(role, color)
+    for role in (QPalette.Text, QPalette.ButtonText, QPalette.WindowText):
+        p.setColor(QPalette.Disabled, role, QColor(115, 117, 122))
+    app.setPalette(p)
+    check = resource_path(os.path.join("icons", "check.svg")).replace("\\", "/")
+    app.setStyleSheet("""
+        QToolBar { spacing: 4px; padding: 4px; border: none; }
+        QToolBar QComboBox, QToolBar QCheckBox { margin: 0 4px; }
+        QToolButton { padding: 5px 10px; border-radius: 6px; }
+        QToolButton:hover { background: #3a3c41; }
+        QToolButton:checked { background: #2d3f57; }
+        QToolButton#rec:checked { background: #c0392b; color: white; }
+        QComboBox { padding: 3px 8px; }
+        QPushButton { padding: 5px 12px; }
+        QPushButton:checked { background: #2d3f57; border: 1px solid #3584e4; border-radius: 3px; }
+        QDockWidget::title { padding: 6px; }
+        #dockTitle { background: #2b2d31; border-bottom: 1px solid #3a3c41; }
+        #dockTitle:hover { background: #33363c; }
+        QGroupBox { border: 1px solid #3a3c41; border-radius: 6px; margin-top: 16px; padding: 12px 8px 6px 8px; }
+        QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #8ab4f8; }
+        QStatusBar QLabel { padding: 0 6px; }
+        QCheckBox::indicator { width: 15px; height: 15px; border: 1px solid #6b6f76; border-radius: 3px;
+                               background: #1b1c1f; }
+        QCheckBox::indicator:hover { border-color: #8ab4f8; }
+        QCheckBox::indicator:checked { background: #3584e4; border-color: #3584e4; image: url("CHECK"); }
+        QCheckBox::indicator:disabled { border-color: #45484e; }
+        QCheckBox::indicator:checked:disabled { background: #2d3f57; border-color: #2d3f57; }
+    """.replace("CHECK", check))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="View, capture and record many webcams at once.")
+    parser.add_argument("--simulate", type=int, default=0, metavar="N",
+                        help="add N simulated cameras (to test without hardware)")
+    parser.add_argument("--version", action="version", version=f"ManyCamFlux {VERSION}")
+    args, qt_args = parser.parse_known_args()
+    sys.excepthook = log_exception
+
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    app = QApplication(sys.argv[:1] + qt_args)
+    app.setApplicationName("ManyCamFlux")
+    app.setWindowIcon(QIcon(resource_path("icon.ico")))
+
+    banner = QPixmap(resource_path("banner.png"))
+    if banner.isNull():
+        banner = QPixmap(480, 120)
+        banner.fill(Qt.black)
+    splash = QSplashScreen(banner.scaledToWidth(560, Qt.SmoothTransformation))
+    splash.setFont(QFont("Segoe UI", 12, QFont.Bold))
+    splash.showMessage("Loading…", Qt.AlignBottom | Qt.AlignHCenter, Qt.white)
+    splash.show()
+    app.processEvents()
+
+    apply_dark_theme(app)
+    # heavy imports (OpenCV, numpy) only once the splash is on screen
+    import camera
+    from camera_widgets import CamFluxWidget
+    camera.SIMULATED = max(0, args.simulate)
+    window = CamFluxWidget()
+    window.show()
+    splash.finish(window)
+    sys.exit(app.exec_())
+
 
 if __name__ == "__main__":
-    from utils import print_info, print_debug, print_success, print_warning
-    
-    print_info("Starting ManyCamFlux application")
-    app = QApplication(sys.argv)
-    
-    # Set application icon
-    icon_path = resource_path(os.path.join("icon.ico"))
-    if os.path.exists(icon_path):
-        app_icon = QIcon(icon_path)
-        app.setWindowIcon(app_icon)
-        print_debug(f"Loaded application icon from {icon_path}")
-    else:
-        print_warning(f"Icon not found at {icon_path}, using default")
-
-    print_debug("Showing resolution selection dialog")
-    resolution_dialog = QDialog()
-    resolution_dialog.setWindowTitle("Choose Camera Resolution")
-    # Set icon for resolution dialog if available
-    if os.path.exists(icon_path):
-        resolution_dialog.setWindowIcon(QIcon(icon_path))
-    
-    layout = QVBoxLayout()
-    resolution_label = QLabel("Select Camera Resolutions:")
-    resolution_combo = QComboBox()
-    resolution_combo.addItems([
-        "640x480 (4:3) (VGA)",
-        "854x480 (16:9) (FWVGA)",
-        "1024x768 (4:3) (XGA)",
-        "1280x720 (16:9) (HD)",
-        "1600x1200 (4:3) (UXGA)",
-        "1920x1080 (16:9) (FHD)",
-        "3264x2448 (4:3) (QUXGA+)",
-        "3840x2160 (16:9) (4K UHD)",
-    ])
-    layout.addWidget(resolution_label)
-    layout.addWidget(resolution_combo)
-    
-    keep_aspect_ratio_cb = QCheckBox("Keep aspect ratio of cameras")
-    keep_aspect_ratio_cb.setChecked(True)  # Default checked
-    layout.addWidget(keep_aspect_ratio_cb)
-    
-    adaptive_resolution_cb = QCheckBox("Keep camera ratio when taking screenshots (for camera rotations)")
-    adaptive_resolution_cb.setChecked(True)  # Default checked
-    layout.addWidget(adaptive_resolution_cb)
-    
-    buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-    buttons.accepted.connect(resolution_dialog.accept)
-    buttons.rejected.connect(resolution_dialog.reject)
-    layout.addWidget(buttons)
-    resolution_dialog.setLayout(layout)
-
-    if resolution_dialog.exec_() == QDialog.Accepted:
-        resolution_text = resolution_combo.currentText()
-        # Extract resolution from option
-        resolution_numbers = resolution_text.split(' ')[0]  
-        resolution = tuple(map(int, resolution_numbers.split('x')))
-        print_debug(f"User selected resolution: {resolution_numbers} - (Option selected : {resolution_text})")
-        
-        keep_aspect_ratio = keep_aspect_ratio_cb.isChecked()
-        print_debug(f"Keep aspect ratio: {keep_aspect_ratio}")
-        
-        print_debug("Showing loading screen with banner")
-        
-        # Check if banner exists and load it
-        banner_path = resource_path(os.path.join("banner.png"))        
-        if os.path.exists(banner_path):
-            # Load the banner image
-            original_pix = QPixmap(banner_path)
-            
-            # Resize the banner (reduce to 30% of original size)
-            scale_factor = 0.2
-            new_width = int(original_pix.width() * scale_factor)
-            new_height = int(original_pix.height() * scale_factor)
-            
-            splash_pix = original_pix.scaled(new_width, new_height, 
-                                             Qt.KeepAspectRatio, 
-                                             Qt.SmoothTransformation)
-            
-            # Create splash screen with resized banner
-            splash = QSplashScreen(splash_pix)
-            print_debug(f"Loaded and scaled banner from {banner_path} ({new_width}x{new_height})")
-        else:
-            # Fallback to gray background if banner not found
-            print_warning(f"Banner not found at {banner_path}, using default")
-            splash_pix = QPixmap(400, 160)  # Smaller default size too
-            splash_pix.fill(Qt.black)
-            splash = QSplashScreen(splash_pix)
-        
-        font = QFont("Arial", 16, QFont.Bold)
-        splash.setFont(font)
-        
-        # Display message over the banner
-        splash.showMessage("Loading cameras...", Qt.AlignBottom | Qt.AlignCenter, Qt.white)
-        
-        splash.show()
-        app.processEvents() 
-        
-        print_debug("Initializing main application")
-        adaptive_resolution = adaptive_resolution_cb.isChecked()
-        print_debug(f"Adaptive resolution: {adaptive_resolution}")
-        widget = CamFluxWidget(resolution, keep_aspect_ratio, adaptive_resolution)
-        
-        # Set the application icon for the main window too
-        if os.path.exists(icon_path):
-            widget.setWindowIcon(QIcon(icon_path))
-        
-        print_debug("Initialization complete, showing main window")
-        splash.finish(widget)
-        widget.show()
-        print_success("Application started successfully")
-    else:
-        print_debug("User cancelled resolution selection, exiting")
-        sys.exit()
-
-    sys.exit(app.exec_())
+    main()
