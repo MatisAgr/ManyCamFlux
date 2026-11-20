@@ -164,8 +164,10 @@ class CamFeedWidget(QWidget):
             return f"{c.model} · {c.det_status}"
         if c.detections is None:
             return f"{c.model} · waiting for a frame…"
-        found = Counter(c.detections[2])  # insertion order: first seen first
-        labels = ", ".join(f"{n} ×{k}" for n, k in found.items()) or "nothing found"
+        found, best = Counter(c.detections[2]), {}  # insertion order: first seen first
+        for name, score in zip(c.detections[2], c.detections[1]):
+            best[name] = max(best.get(name, 0.0), float(score))
+        labels = ", ".join(f"{n} ×{k} ({best[n]:.2f})" for n, k in found.items()) or "nothing found"
         return f"{c.model} · {c.det_fps:.1f} det/s · {labels}"
 
     def mousePressEvent(self, event):
@@ -722,6 +724,13 @@ class CamFluxWidget(QMainWindow):
         dialog = CaptureSettingsDialog(self.cfg, self, MODELS_DIR)
         if dialog.exec_():
             self.cfg.update(dialog.values())
+            renamed = dialog.renamed()  # one pass, so swapping two names works
+            self.models = {renamed.get(name, name): worker for name, worker in self.models.items()}
+            for f in self.feeds.values():
+                f.camera.model = renamed.get(f.camera.model, f.camera.model)
+            for settings in list(self.saved_cams.values()) + self.legacy_cams:  # unplugged cameras
+                if settings.get("model") in renamed:
+                    settings["model"] = renamed[settings["model"]]
             library = {m["name"]: m for m in self.cfg["models"]}
             for name, worker in self.models.items():
                 worker.entry = library.get(name, worker.entry)  # classes and threshold apply live

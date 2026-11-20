@@ -338,6 +338,7 @@ class CaptureSettingsDialog(QDialog):
 
         box, form = section("Vision models")
         self.models_dir, self.models = models_dir, copy.deepcopy(cfg["models"])
+        self._original = [(m, m["name"]) for m in self.models]  # for renamed()
         self.imported, self.removed = [], []  # files: trashed on cancel / on OK
         self.model_list = QListWidget()
         self.model_list.setMaximumHeight(90)
@@ -352,6 +353,10 @@ class CaptureSettingsDialog(QDialog):
         buttons.addWidget(remove)
         buttons.addStretch(1)
         form.addRow(buttons)
+        self.model_name = QLineEdit()
+        self.model_name.setToolTip("Name shown in the Cameras panel and on the feeds")
+        self.model_name.editingFinished.connect(self._set_name)
+        form.addRow("Name", self.model_name)
         self.classes = QLineEdit()
         self.classes.setToolTip("Class names in the model's order, comma-separated")
         self.classes.editingFinished.connect(self._set_classes)
@@ -393,12 +398,32 @@ class CaptureSettingsDialog(QDialog):
 
     def _show_model(self, _row):
         m = self._model()
-        for w in (self.classes, self.model_threshold):
+        for w in (self.model_name, self.classes, self.model_threshold):
             w.setEnabled(m is not None)
+        self.model_name.setText(m["name"] if m else "")
         self.classes.setText(", ".join(m["classes"]) if m else "")
         self.model_threshold.blockSignals(True)
         self.model_threshold.setValue(m["threshold"] if m else 0.5)
         self.model_threshold.blockSignals(False)
+
+    def _set_name(self):
+        m = self._model()
+        if m is None:
+            return
+        name = self.model_name.text().strip()
+        if name == m["name"]:
+            return
+        if not name or any(o is not m and o["name"] == name for o in self.models):
+            self.model_name.setText(m["name"])
+            QMessageBox.warning(self, "Name", "Give the model a name that no other model has.")
+            return
+        m["name"] = name
+        self.model_list.currentItem().setText(name)
+
+    def renamed(self):
+        """{old name: new name} of the models renamed in this dialog (cameras follow them)."""
+        return {old: m["name"] for m, old in self._original
+                if any(m is o for o in self.models) and m["name"] != old}
 
     def _set_classes(self):
         m = self._model()

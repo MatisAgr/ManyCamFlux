@@ -184,3 +184,36 @@ def test_panel_shows_and_clears_a_missing_model(qapp):
     assert combo.currentData() == "gone" and "missing" in combo.currentText()
     combo.setCurrentIndex(combo.findData(None))
     assert calls == [None]
+
+
+def test_vision_strip_shows_count_and_best_score_per_class(qapp):
+    from PyQt5.QtWidgets import QWidget
+    from camera_widgets import CamFeedWidget
+    cam = fake_cam()
+    cam.status, cam.label, cam.model, cam.det_fps = "", "cam", "m", 3.0
+    parent = QWidget()
+    feed = CamFeedWidget(cam, types.SimpleNamespace(recording=False, selected=None), parent)
+    cam.detections = (np.zeros((3, 4), np.float32), np.array([0.78, 0.95, 0.91], np.float32),
+                      ["arm", "holder", "arm"])
+    assert feed._vision_text() == "m · 3.0 det/s · arm ×2 (0.91), holder ×1 (0.95)"
+
+
+def test_settings_rename_model(qapp, tmp_path, monkeypatch):
+    from PyQt5.QtWidgets import QMessageBox
+    from camera_widgets import DEFAULTS
+    from dialogs import CaptureSettingsDialog
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warnings.append(a[2])))
+    cfg = dict(DEFAULTS, models=[{"name": "a", "file": "a.onnx", "classes": ["x"], "threshold": 0.5},
+                                 {"name": "b", "file": "b.onnx", "classes": ["y"], "threshold": 0.5}])
+    d = CaptureSettingsDialog(cfg, None, str(tmp_path))
+    d.model_list.setCurrentRow(0)
+    d.model_name.setText("b")  # taken: refused
+    d.model_name.editingFinished.emit()
+    assert warnings and d.values()["models"][0]["name"] == "a" and d.model_name.text() == "a"
+    d.model_name.setText("  arm detector ")
+    d.model_name.editingFinished.emit()
+    assert d.values()["models"][0]["name"] == "arm detector"
+    assert d.model_list.item(0).text() == "arm detector"
+    assert d.renamed() == {"a": "arm detector"}
+    assert cfg["models"][0]["name"] == "a"  # the dialog edits a copy until OK
