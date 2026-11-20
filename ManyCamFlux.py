@@ -3,11 +3,25 @@ import os
 import sys
 import traceback
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QFont, QIcon, QPalette, QPixmap
-from PyQt5.QtWidgets import QApplication, QSplashScreen
+if sys.platform == "win32":
+    # PyQt5 ships an old msvcp140.dll (14.26): loaded first, it makes onnxruntime (vision.py) fail with
+    # "DLL load failed". A newer copy loaded before PyQt5 serves both (~1 ms): the one PyInstaller
+    # bundles next to the exe, else the system's.
+    import ctypes
+    _folders = [getattr(sys, "_MEIPASS", ""), os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")]
+    for _dll in ("msvcp140.dll", "msvcp140_1.dll"):
+        for _folder in filter(None, _folders):
+            try:
+                ctypes.WinDLL(os.path.join(_folder, _dll))
+                break
+            except OSError:  # not there: next folder (none at all only affects the vision models)
+                pass
 
-from utils import VERSION, print_error, resource_path
+from PyQt5.QtCore import Qt  # noqa: E402
+from PyQt5.QtGui import QColor, QFont, QIcon, QPalette, QPixmap  # noqa: E402
+from PyQt5.QtWidgets import QApplication, QSplashScreen  # noqa: E402
+
+from utils import VERSION, print_error, resource_path  # noqa: E402
 
 
 def log_exception(kind, value, tb):

@@ -5,13 +5,13 @@
 ManyCamFlux is a tiny project designed to manage multiple webcam feeds. It provides a simple interface to view, control, and capture screenshots from multiple cameras simultaneously.
 
 > [!IMPORTANT]
-> **🎉 ManyCamFlux 2.0 is out!** Almost everything was rewritten: threaded capture, hot-swap, video recording, timelapse, recordings browser, new camera panel...
+> **🎉 ManyCamFlux 2.1 is out!** Test object-detection models (RF-DETR, ONNX) live on your cameras, display only.
 >
-> 👉 See the full patch note in the [**2.0 release**](https://github.com/MatisAgr/ManyCamFlux/releases/tag/2.0).
+> 2.0 rewrote almost everything: threaded capture, hot-swap, video recording, timelapse, recordings browser, new camera panel... See the [**2.0 release**](https://github.com/MatisAgr/ManyCamFlux/releases/tag/2.0) patch note.
 >
 > Looking for the previous version? It is archived in the [Version-1.2-(OLD)](https://github.com/MatisAgr/ManyCamFlux/tree/Version-1.2-(OLD)) branch.
 
-![ManyCamFlux main window with 6 cameras](docs/screenshots/main.png)
+![ManyCamFlux main window with 6 simulated cameras, a vision model on two of them](docs/screenshots/main.png)
 
 ![Recordings browser](docs/screenshots/recordings.png)
 
@@ -33,8 +33,18 @@ ManyCamFlux is a tiny project designed to manage multiple webcam feeds. It provi
 - **Cut static scenes**: optional motion detection only keeps the frames where something moves (plus 2 s after), so a 24 h recording of a mostly still scene stays short. The date and time can be burned into the video.
 - **Recordings browser** (`Ctrl+L`): every session with a thumbnail, a built-in player (all parts as one timeline, speed up to ×64, frame by frame with ←/→) showing the real capture time of each frame, and *Render to video* for timelapses, with a progress bar at the bottom of the window. Recordings can be renamed (`F2`) and deleted (`Del`, to the recycle bin), or just one camera's track.
 - **Frame tracking**: each timelapse/video session has a `frames.csv` with the frame number, timestamp, elapsed time and the source frame number of each camera (useful to spot dropped or duplicated frames).
+- **Vision models (display only)**: import object-detection models (RF-DETR exported to ONNX) in *Settings*, then pick one per camera in the panel. Boxes are drawn on the live view, with the detections per second and, for each label found, its count and best confidence at the bottom; snapshots and videos stay raw. A model shared by several cameras is loaded once and serves them in turn, on the CPU (half the cores, so capture and recording keep their frame rate). Models can be renamed, and class names come from the model, a `classes.txt` next to it, or are edited in *Settings*.
 - **Focus & fullscreen**: double-click a camera to show it alone, `F11` for fullscreen, `Esc` to go back.
 - **Persistent settings**: saved automatically on exit (`~/Documents/ManyCamFlux/`), importable from a file.
+
+## Download (Windows)
+
+Two versions are available in the [latest release](https://github.com/MatisAgr/ManyCamFlux/releases/latest), nothing to install:
+
+| File | How to use it | Startup |
+|------|---------------|---------|
+| `ManyCamFlux_2.1_windows.zip` (**recommended**) | Unzip it, then run `ManyCamFlux.exe` inside the folder. Keep the `_internal` folder next to the `.exe`. | Fast |
+| `ManyCamFlux_2.1_portable.exe` | A single file: just run it. | Slower (it unpacks itself on every launch) |
 
 ## Requirements
 
@@ -101,27 +111,27 @@ To build your modifications of ManyCamFlux project into a standalone executable 
     pip install pyinstaller
     ```
 
-2. **Compile the project**:
+2. **Compile the project** (Windows):
     ```sh
-    pyinstaller -D -w --add-data="assets;assets" -i assets/icon.ico ManyCamFlux.py
+    build.bat
     ```
-    - **Single file**: use `-F` instead of `-D` (simpler to share, but slower to start: it unpacks itself on every launch)
-    - **Enable debug console**: Remove `-w`
-        - **Exclude icon**: Remove `-i assets/icon.ico`
-    - **For Mac/Linux**: Replace `;` with `:` in `--add-data="assets/*:."`
+    It builds both release files (about 3 min) into `.proj/release/`, named after `utils.VERSION`, and overwrites them if they exist:
+    - `ManyCamFlux_<version>_windows.zip`: the one-folder build (`dist/ManyCamFlux/`) zipped, with `LICENSE`
+    - `ManyCamFlux_<version>_portable.exe`: the single-file build (`LICENSE` is inside)
+
+    It also replaces the old Visual C++ runtime bundled with PyQt5, which prevents the vision models from loading, with the build PC's newer one: build on a PC with an up-to-date Visual C++ runtime.
+    - **Debug console**: remove `-w` in `build.bat`
+    - **Mac/Linux**: `pyinstaller -D -w --add-data="assets:assets" --exclude-module PyQt6 --exclude-module torch ManyCamFlux.py`
 
 📌 More details available at: [PyInstaller Documentation](https://pyinstaller.org/en/stable/usage.html)
 
 
-3. **Run the executable**:
-    - After the compilation, the executable `(ManyCamFlux.exe)` will be located in the `dist` directory. You can run it directly from there.
-    - Only the `.exe` file is necessary for the standalone version. It can be portable and moved to another machine if needed.
+3. **Run the executable**: the zip version needs its `_internal` folder next to `ManyCamFlux.exe` (unzip the whole folder); the portable `.exe` runs alone.
 
-**Note:**
-
-If PyInstaller is not recognized after installation, try this command:
-```sh
-python -m PyInstaller -F -w --add-data="assets;assets" -i assets/icon.ico ManyCamFlux.py
-```
+**Note:** `build.bat` calls `python -m PyInstaller`, so it works even when the `pyinstaller` command is not on the PATH.
 
 *Further updates and adjustments will follow.*
+
+## License
+
+ManyCamFlux is free software under the [GNU GPL v3](LICENSE) (required by PyQt5, itself GPL v3)
