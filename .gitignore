@@ -9,5 +9,5 @@ __pycache__
 
 .proj
 .pytest_cache
-
-*/superpowers
+*superpowers
+.superpowers
