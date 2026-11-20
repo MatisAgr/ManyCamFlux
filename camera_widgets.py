@@ -1,9 +1,10 @@
 import json
 import math
 import os
+from collections import Counter
 from datetime import datetime
 
-from PyQt5.QtCore import QEvent, QRect, QRectF, QSize, Qt, QTimer, QUrl
+from PyQt5.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl
 from PyQt5.QtGui import QColor, QDesktopServices, QPainter, QPen
 from PyQt5.QtWidgets import (QAction, QCheckBox, QComboBox, QDockWidget, QFileDialog, QGridLayout,
                              QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QProgressBar,
@@ -16,6 +17,7 @@ from recorder import RenderJob, Timelapse, VideoRecorder, save_async
 from utils import REPO_URL, VERSION, hms, icon, print_error, print_info, print_success, print_warning
 
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), "Documents", "ManyCamFlux", "ManyCamFlux_config.json")
+MODELS_DIR = os.path.join(os.path.dirname(CONFIG_PATH), "models")  # vision models imported in the settings
 DEFAULT_OUTPUT = os.path.join(os.path.expanduser("~"), "Pictures", "ManyCamFlux")
 DEFAULTS = {
     "resolution": [1280, 720],
@@ -35,8 +37,11 @@ DEFAULTS = {
     "timelapse_duration": 0,  # seconds, 0 = until stopped
     "video_duration": 0,
     "video_segment_minutes": 10,
+    "models": [],  # vision model library: [{"name", "file", "classes", "threshold"}], replaced, never mutated
 }
 ACCENT = QColor(53, 132, 228)
+BOX_COLORS = [QColor(80, 220, 100), QColor(255, 160, 40), QColor(60, 200, 230), QColor(240, 220, 60),
+              QColor(230, 90, 200)]  # one per class index
 
 
 def stamp():
@@ -70,9 +75,10 @@ class CamFeedWidget(QWidget):
     def refresh(self):
         """Repaint only when something visible changed (new frame, status, name...)."""
         c = self.camera
-        key = (c.frame_id, c.status, c.label, self.main.recording, self.main.selected is c)
+        key = (c.frame_id, c.status, c.label, self.main.recording, self.main.selected is c,
+               c.model, id(c.detections), c.det_status)  # id: comparing numpy arrays raises
         if key != self._shown:
-            self._shown = key
+            self._shown, self._shown_dets = key, c.detections  # keep it alive so its id is not reused
             self.update()
 
     def resizeEvent(self, event):
@@ -93,8 +99,15 @@ class CamFeedWidget(QWidget):
                 target = QRectF(self.rect())
             p.setRenderHint(QPainter.SmoothPixmapTransform)
             p.drawImage(target, img)
+            if c.model:
+                self._draw_boxes(p, target)
 
         bar = 26 if self.main.cfg["show_info_bar"] else 0
+        if c.model:  # vision strip, kept even without the info bar: it is the feature's only feedback
+            p.fillRect(0, h - bar - 22, w, 22, QColor(0, 0, 0, 150))
+            p.setPen(QColor(200, 210, 225))
+            p.drawText(QRect(10, h - bar - 22, w - 20, 22), Qt.AlignVCenter | Qt.AlignLeft,
+                       p.fontMetrics().elidedText(self._vision_text(), Qt.ElideRight, w - 20))
         if bar:
             p.fillRect(0, h - bar, w, bar, QColor(0, 0, 0, 170))
             frame = c.frame
@@ -127,6 +140,33 @@ class CamFeedWidget(QWidget):
             p.setPen(QPen(ACCENT, 2))
             p.setBrush(Qt.NoBrush)
             p.drawRect(QRectF(self.rect()).adjusted(1, 1, -1, -1))
+
+    def _draw_boxes(self, p, target):
+        """Detections are in camera.frame pixels (already rotated/mirrored like the preview)."""
+        c, frame, dets = self.camera, self.camera.frame, self.camera.detections
+        if frame is None or dets is None:
+            return
+        sx, sy = target.width() / frame.shape[1], target.height() / frame.shape[0]
+        classes = next((m["classes"] for m in self.main.cfg["models"] if m["name"] == c.model), [])
+        p.setBrush(Qt.NoBrush)
+        for (x1, y1, x2, y2), score, name in zip(*dets):
+            color = BOX_COLORS[(classes.index(name) if name in classes else 0) % len(BOX_COLORS)]
+            box = QRectF(target.x() + x1 * sx, target.y() + y1 * sy, (x2 - x1) * sx, (y2 - y1) * sy)
+            p.setPen(QPen(color, 2))
+            p.drawRect(box)
+            above = box.y() - 4 >= target.y() + p.fontMetrics().ascent()  # else inside, at the top of the box
+            p.drawText(QPointF(box.x() + 2, box.y() - 4 if above else box.y() + p.fontMetrics().ascent() + 2),
+                       f"{name} {score:.2f}")
+
+    def _vision_text(self):
+        c = self.camera
+        if c.det_status:
+            return f"{c.model} · {c.det_status}"
+        if c.detections is None:
+            return f"{c.model} · waiting for a frame…"
+        found = Counter(c.detections[2])  # insertion order: first seen first
+        labels = ", ".join(f"{n} ×{k}" for n, k in found.items()) or "nothing found"
+        return f"{c.model} · {c.det_fps:.1f} det/s · {labels}"
 
     def mousePressEvent(self, event):
         self.main.select_camera(self.camera)
@@ -166,6 +206,7 @@ class CamFluxWidget(QMainWindow):
         self.video = None
         self.renders = []
         self.recordings = None
+        self.models = {}  # vision model name -> vision.ModelWorker, while at least one camera uses it
         try:
             self.cfg, cams = load_config(CONFIG_PATH)
         except Exception as e:
@@ -464,6 +505,8 @@ class CamFluxWidget(QMainWindow):
         cam.keep_aspect = self.keep_aspect_ratio
         self.feeds[device] = CamFeedWidget(cam, self, self.flux)
         cam.start()
+        if cam.model:
+            self.set_camera_model(cam, cam.model)
         self.notify(f"Camera connected: {cam.label}")
 
     def remove_camera(self, device):
@@ -471,6 +514,7 @@ class CamFluxWidget(QMainWindow):
         cam = feed.camera
         cam.stop()
         self.saved_cams[device] = cam.settings()  # restored if it is plugged back in
+        self.set_camera_model(cam, None)
         if self.focused is feed:
             self.focused = None
         if self.selected is cam:
@@ -478,6 +522,29 @@ class CamFluxWidget(QMainWindow):
         feed.deleteLater()
         print_warning(f"Camera disconnected: {cam.label}")
         self.statusBar().showMessage(f"Camera disconnected: {cam.label}", 6000)
+
+    def set_camera_model(self, cam, name):
+        """Run the library model `name` on cam (None: no model). A model is loaded once for all the
+        cameras using it, and unloaded when the last one leaves."""
+        for key, worker in list(self.models.items()):
+            if cam in worker.cameras:
+                worker.cameras = tuple(c for c in worker.cameras if c is not cam)
+                if not worker.cameras:
+                    worker.stop()
+                    del self.models[key]
+        entry = next((m for m in self.cfg["models"] if m["name"] == name), None)
+        cam.model, cam.detections, cam.det_fps = name, None, 0.0
+        cam.det_status = "Model not found" if name and entry is None else ""
+        if entry is None:
+            return
+        worker = self.models.get(name)
+        if worker is None:
+            from vision import ModelWorker  # loaded on first use: keeps onnxruntime out of startup
+            worker = self.models[name] = ModelWorker(entry, MODELS_DIR)
+            worker.cameras = (cam,)
+            worker.start()
+        else:
+            worker.cameras += (cam,)
 
     def update_grid_layout(self):
         while self.grid.count():
@@ -652,9 +719,16 @@ class CamFluxWidget(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(self.output_dir("")))
 
     def show_capture_settings(self):
-        dialog = CaptureSettingsDialog(self.cfg, self)
+        dialog = CaptureSettingsDialog(self.cfg, self, MODELS_DIR)
         if dialog.exec_():
             self.cfg.update(dialog.values())
+            library = {m["name"]: m for m in self.cfg["models"]}
+            for name, worker in self.models.items():
+                worker.entry = library.get(name, worker.entry)  # classes and threshold apply live
+            for f in self.feeds.values():
+                if f.camera.model and f.camera.model not in library:
+                    self.set_camera_model(f.camera, None)
+            self.panel.refresh_models()
             self.save_config()
             for f in self.feeds.values():
                 f.update()
@@ -703,7 +777,8 @@ class CamFluxWidget(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Configuration", f"Failed to load configuration:\n{e}")
             return
-        self.cfg.update({k: v for k, v in cfg.items() if k not in ("resolution", "keep_aspect_ratio")})
+        # the model library is files on this PC: a config (maybe from another PC) never replaces it
+        self.cfg.update({k: v for k, v in cfg.items() if k not in ("resolution", "keep_aspect_ratio", "models")})
         self._select_resolution(cfg["resolution"])  # first: it applies to all, per-camera settings come after
         self.set_resolution(self.res_combo.choices[self.res_combo.currentIndex()][0])
         self.ratio_cb.setChecked(cfg["keep_aspect_ratio"])
@@ -716,6 +791,7 @@ class CamFluxWidget(QMainWindow):
                 cam.apply_settings(saved)
                 if cam.resolution != before:
                     cam.reopen(clamp(cam.resolution, cam.native))
+                self.set_camera_model(cam, cam.model)
         self.update_grid_layout()
         self.panel.refresh()
         self.notify(f"Configuration imported: {path}")
@@ -732,8 +808,9 @@ class CamFluxWidget(QMainWindow):
             job.cancel()
             job.join(timeout=3)
         cams = [f.camera for f in self.feeds.values()]
-        for cam in cams:
-            cam.stop()
-        for cam in cams:
-            cam.join(timeout=1)
+        workers = list(self.models.values())
+        for t in cams + workers:
+            t.stop()
+        for t in cams + workers:
+            t.join(timeout=1)
         event.accept()

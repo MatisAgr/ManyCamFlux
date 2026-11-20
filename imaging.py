@@ -25,6 +25,14 @@ def adjust(frame, rotation=0, brightness=0, contrast=0, saturation=0, flip_h=Fal
     return frame
 
 
+def smooth_rate(rate, interval, k=0.1):
+    """Smoothed events per second after one more `interval` (s). Averages the intervals, not their
+    inverses: with irregular timing (a loaded CPU), averaging 1/interval overstates the rate."""
+    if not rate:
+        return 1 / max(interval, 1e-6)
+    return 1 / max((1 - k) / rate + k * interval, 1e-6)
+
+
 def fit_size(w, h, max_w, max_h):
     """Largest size with the w/h aspect ratio that fits in max_w x max_h."""
     scale = min(max_w / w, max_h / h)

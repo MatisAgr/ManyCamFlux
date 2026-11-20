@@ -1,8 +1,11 @@
-from PyQt5.QtCore import QRegularExpression, Qt
+import copy
+import os
+
+from PyQt5.QtCore import QFile, QRegularExpression, Qt
 from PyQt5.QtGui import QRegularExpressionValidator
 from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
                              QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                             QMessageBox, QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget)
+                             QListWidget, QMessageBox, QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget)
 
 from camera import clamp, resolution_choices
 from utils import hms, icon, parse_hms
@@ -143,6 +146,15 @@ class CameraPanel(QWidget):
             self.flips[attr] = b
         form.addRow("Mirror", mirror)
         ev.addWidget(box)
+
+        box, form = section("Vision")
+        self.model_combo = QComboBox()
+        self.model_combo.setToolTip("Object detection model run on this camera (display only). "
+                                    "Import models in the settings (Ctrl+,)")
+        self.model_combo.currentIndexChanged.connect(
+            lambda i: self.cam and i >= 0 and self.main.set_camera_model(self.cam, self.model_combo.itemData(i)))
+        form.addRow("Model", self.model_combo)
+        ev.addWidget(box)
         layout.addWidget(self.editor)
         layout.addStretch(1)
 
@@ -161,6 +173,18 @@ class CameraPanel(QWidget):
         layout.addWidget(box)
         self.set_camera(None)
 
+    def refresh_models(self):
+        """Fill the model choice from the library and select the current camera's model. No signal emitted."""
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        self.model_combo.addItem("None", None)
+        for m in self.main.cfg["models"]:
+            self.model_combo.addItem(m["name"], m["name"])
+        if self.cam and self.cam.model and self.model_combo.findData(self.cam.model) < 0:
+            self.model_combo.addItem(f"{self.cam.model} (missing)", self.cam.model)  # so "None" can clear it
+        self.model_combo.setCurrentIndex(max(0, self.model_combo.findData(self.cam.model)) if self.cam else 0)
+        self.model_combo.blockSignals(False)
+
     def refresh(self):
         """Rebuild the camera list (after hot-plug or import)."""
         cams = [f.camera for f in self.main.feeds.values()]
@@ -174,6 +198,7 @@ class CameraPanel(QWidget):
     def set_camera(self, cam):
         self.cam = cam
         self.editor.setEnabled(cam is not None)
+        self.refresh_models()
         if cam is None:
             self.name.clear()
             self.rot_label.setText("")
@@ -208,7 +233,7 @@ class CameraPanel(QWidget):
 
 
 class CaptureSettingsDialog(QDialog):
-    def __init__(self, cfg, parent=None):
+    def __init__(self, cfg, parent=None, models_dir=""):
         super().__init__(parent)
         self.setWindowTitle("Capture settings")
         layout = QVBoxLayout(self)
@@ -311,6 +336,40 @@ class CaptureSettingsDialog(QDialog):
         form.addRow("", self.info_bar)
         left.addWidget(box)
 
+        box, form = section("Vision models")
+        self.models_dir, self.models = models_dir, copy.deepcopy(cfg["models"])
+        self.imported, self.removed = [], []  # files: trashed on cancel / on OK
+        self.model_list = QListWidget()
+        self.model_list.setMaximumHeight(90)
+        self.model_list.addItems([m["name"] for m in self.models])
+        form.addRow(self.model_list)
+        buttons = QHBoxLayout()
+        add, remove = QPushButton("Import…"), QPushButton("Remove")
+        add.setToolTip("RF-DETR model exported to ONNX")
+        add.clicked.connect(self._browse_model)
+        remove.clicked.connect(self.remove_model)
+        buttons.addWidget(add)
+        buttons.addWidget(remove)
+        buttons.addStretch(1)
+        form.addRow(buttons)
+        self.classes = QLineEdit()
+        self.classes.setToolTip("Class names in the model's order, comma-separated")
+        self.classes.editingFinished.connect(self._set_classes)
+        form.addRow("Classes", self.classes)
+        self.model_threshold = QDoubleSpinBox()
+        self.model_threshold.setRange(0.05, 0.95)
+        self.model_threshold.setSingleStep(0.05)
+        self.model_threshold.setToolTip("Minimum confidence for a detection to be shown")
+        self.model_threshold.valueChanged.connect(lambda v: self._model() and self._model().update(threshold=v))
+        form.addRow("Threshold", self.model_threshold)
+        hint = QLabel("Display only. Pick a model for a camera in the Cameras panel.")
+        hint.setWordWrap(True)
+        hint.setEnabled(False)
+        form.addRow(hint)
+        self.model_list.currentRowChanged.connect(self._show_model)
+        self._show_model(self.model_list.currentRow())
+        left.addWidget(box)
+
         box, form = section("Grid images")
         self.labels = QCheckBox("Show camera names")
         self.labels.setChecked(cfg["show_labels_in_screenshots"])
@@ -327,6 +386,65 @@ class CaptureSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self.setMinimumWidth(860)
+
+    def _model(self):
+        row = self.model_list.currentRow()
+        return self.models[row] if 0 <= row < len(self.models) else None
+
+    def _show_model(self, _row):
+        m = self._model()
+        for w in (self.classes, self.model_threshold):
+            w.setEnabled(m is not None)
+        self.classes.setText(", ".join(m["classes"]) if m else "")
+        self.model_threshold.blockSignals(True)
+        self.model_threshold.setValue(m["threshold"] if m else 0.5)
+        self.model_threshold.blockSignals(False)
+
+    def _set_classes(self):
+        m = self._model()
+        if m is None:
+            return
+        names = [n.strip() for n in self.classes.text().split(",") if n.strip()]
+        if names == m["classes"]:
+            return
+        if len(names) != len(m["classes"]):
+            self.classes.setText(", ".join(m["classes"]))
+            QMessageBox.warning(self, "Classes", f"This model has {len(m['classes'])} classes: "
+                                                 f"give {len(m['classes'])} names, comma-separated.")
+            return
+        m["classes"] = names
+
+    def _browse_model(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import a vision model", "", "ONNX models (*.onnx)")
+        if path:
+            self.add_model(path)
+
+    def add_model(self, path):
+        from vision import import_model  # loaded on first use: keeps onnxruntime out of startup
+        taken = [m["name"] for m in self.models] + [os.path.splitext(os.path.basename(f))[0] for f in self.removed]
+        try:
+            entry = import_model(path, self.models_dir, taken)
+        except (ValueError, OSError) as e:
+            QMessageBox.warning(self, "Vision model", f"Cannot import this model:\n{e}")
+            return
+        self.models.append(entry)
+        self.imported.append(os.path.join(self.models_dir, entry["file"]))
+        self.model_list.addItem(entry["name"])
+        self.model_list.setCurrentRow(len(self.models) - 1)
+
+    def remove_model(self):
+        row = self.model_list.currentRow()
+        if row < 0:
+            return
+        entry = self.models.pop(row)
+        self.removed.append(os.path.join(self.models_dir, entry["file"]))
+        self.model_list.takeItem(row)
+
+    def done(self, result):
+        for path in self.removed if result else self.imported:  # recoverable, like recordings
+            if os.path.exists(path):
+                QFile.moveToTrash(path)
+        super().done(result)
 
     def _split_toggled(self, on, warn=True):
         self.segment.setEnabled(on)
@@ -352,4 +470,5 @@ class CaptureSettingsDialog(QDialog):
                 "video_segment_minutes": self.segment.value(),
                 "show_labels_in_screenshots": self.labels.isChecked(),
                 "adaptive_resolution": self.adaptive.isChecked(), "show_info_bar": self.info_bar.isChecked(),
-                "timelapse_duration": self.tl_duration.value(), "video_duration": self.video_duration.value()}
+                "timelapse_duration": self.tl_duration.value(), "video_duration": self.video_duration.value(),
+                "models": self.models}

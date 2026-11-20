@@ -10,7 +10,7 @@ import numpy as np
 from PyQt5.QtGui import QImage
 from PyQt5.QtMultimedia import QCameraInfo
 
-from imaging import adjust, fit_size, resize
+from imaging import adjust, fit_size, resize, smooth_rate
 
 # DirectShow opens fast and enumerates devices in the same order as Qt's camera list on Windows
 BACKEND = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
@@ -141,6 +141,7 @@ class Camera(threading.Thread):
         self.flip_h = self.flip_v = False
         self.keep_aspect = True
         self.display_size = (640, 360)  # device pixels of the widget showing this camera
+        self.model = None  # vision model name (library entry) or None
         # output (written by this thread)
         self.frame = None    # latest processed full-resolution BGR frame
         self.preview = None  # (QImage, backing ndarray) sized for display_size
@@ -148,6 +149,10 @@ class Camera(threading.Thread):
         self.fps = 0.0
         self.native = None  # largest resolution the camera supports, once probed
         self.status = "Connecting…"
+        # vision output (written by its vision.ModelWorker)
+        self.detections = None  # (xyxy, scores, names) of the last analysed frame
+        self.det_fps = 0.0
+        self.det_status = ""
         self._reopen = False
         self._halt = threading.Event()
 
@@ -155,7 +160,7 @@ class Camera(threading.Thread):
         return {"device": self.device, "name": self.label, "brightness": self.brightness,
                 "contrast": self.contrast, "saturation": self.saturation,
                 "rotation_angle": self.rotation, "flip_horizontal": self.flip_h,
-                "flip_vertical": self.flip_v, "visible": self.visible, "resolution": list(self.resolution)}
+                "flip_vertical": self.flip_v, "visible": self.visible, "resolution": list(self.resolution), "model": self.model}
 
     def apply_settings(self, s):
         self.label = str(s.get("name", self.label))
@@ -166,6 +171,7 @@ class Camera(threading.Thread):
         self.flip_h = bool(s.get("flip_horizontal", False))
         self.flip_v = bool(s.get("flip_vertical", False))
         self.visible = bool(s.get("visible", True))
+        self.model = s["model"] if isinstance(s.get("model"), str) else None
         if isinstance(s.get("resolution"), list) and len(s["resolution"]) == 2:
             self.resolution = tuple(int(v) for v in s["resolution"])
 
@@ -212,8 +218,7 @@ class Camera(threading.Thread):
             frame = adjust(raw, self.rotation, self.brightness, self.contrast, self.saturation,
                            self.flip_h, self.flip_v)
             now = time.perf_counter()
-            inst = 1 / max(now - last, 1e-6)
-            self.fps = 0.9 * self.fps + 0.1 * inst if self.fps else inst
+            self.fps = smooth_rate(self.fps, now - last)
             last = now
             self.preview = self._make_preview(frame)
             self.frame = frame
