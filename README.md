@@ -134,3 +134,7 @@ python -m PyInstaller -D -w --add-data="assets;assets" -i assets/icon.ico ManyCa
 ```
 
 *Further updates and adjustments will follow.*
+
+## License
+
+ManyCamFlux is free software under the [GNU GPL v3](LICENSE) (required by PyQt5, itself GPL v3)

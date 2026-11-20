@@ -673,7 +673,9 @@ class CamFluxWidget(QMainWindow):
             <tr><td>Double-click</td><td>Show one camera alone</td></tr>
             </table>
             <p>Output: {self.output_dir("")}<br>Settings: {CONFIG_PATH}</p>
-            <p><a href="{REPO_URL}">{REPO_URL}</a></p>""")
+            <p><a href="{REPO_URL}">{REPO_URL}</a></p>
+            <p>Free software under the GNU GPL v3, with no warranty.
+            Source code and license: link above.</p>""")
 
     # ---------- config ----------
     def save_config(self, notify=False):
