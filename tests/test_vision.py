@@ -26,7 +26,7 @@ def wait_for(cond, timeout=20):
 
 
 def fake_cam():
-    return types.SimpleNamespace(frame=np.zeros((480, 640, 3), np.uint8), frame_id=1,
+    return types.SimpleNamespace(frame=np.zeros((480, 640, 3), np.uint8), frame_id=1, ping=None,
                                  detections=None, det_fps=0.0, det_status="")
 
 

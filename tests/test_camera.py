@@ -81,3 +81,46 @@ def test_native_resolution_kept_for_the_same_model_only():
     other.apply_settings(saved.settings())
     assert same.native == (3264, 2448)
     assert other.native is None  # another model plugged into that port: probed again
+
+
+def test_ping_of_a_network_camera():
+    import socket
+    import threading
+    import time
+
+    from camera import Camera, ping_text
+    assert (ping_text(None), ping_text(0.4), ping_text(12.3)) == ("", "ping <1 ms", "ping 12 ms")
+    server = socket.create_server(("127.0.0.1", 0))
+    url = f"http://127.0.0.1:{server.getsockname()[1]}/video"
+    cam = Camera(url, "net", url, (640, 480))
+    threading.Thread(target=cam._measure_ping, daemon=True).start()
+    deadline = time.time() + 5
+    while cam.ping is None and time.time() < deadline:
+        time.sleep(0.05)
+    assert cam.ping is not None and cam.ping < 1000
+    server.close()
+    cam.index = "http://127.0.0.1:1/video"  # nothing listens there: unreachable
+    deadline = time.time() + 5
+    while cam.ping is not None and time.time() < deadline:
+        time.sleep(0.05)
+    cam._halt.set()
+    assert cam.ping is None
+
+
+def test_mirror_stream_asks_the_chosen_size(monkeypatch):
+    import camera
+    opened = []
+
+    class FakeCapture:
+        def __init__(self, url, *args):
+            opened.append(url)
+
+        def isOpened(self):
+            return True
+
+    monkeypatch.setattr(camera.cv2, "VideoCapture", FakeCapture)
+    camera.open_capture("host:usb:x", "http://127.0.0.1:8090/cam/1.mjpg", (640, 480))
+    camera.open_capture("host:usb:x", "http://127.0.0.1:8090/cam/1.mjpg?q=50", (640, 480))
+    camera.open_capture("http://10.0.0.9/video", "http://10.0.0.9/video", (640, 480))  # plain stream: left as is
+    assert opened == ["http://127.0.0.1:8090/cam/1.mjpg?w=640&h=480", "http://127.0.0.1:8090/cam/1.mjpg?q=50&w=640&h=480",
+                      "http://10.0.0.9/video"]

@@ -3,6 +3,7 @@ import ctypes
 import json
 import math
 import re
+import socket
 import sys
 import threading
 import time
@@ -104,6 +105,11 @@ def source_label(device):
     return port or (device if "://" in device else "")
 
 
+def ping_text(ms):
+    """'ping 12 ms', 'ping <1 ms' (same PC), '' if unknown."""
+    return "" if ms is None else "ping <1 ms" if ms < 1 else f"ping {ms:.0f} ms"
+
+
 def mirror_cameras(url):
     """A stream mirror's cameras (e.g. a VisionHost's http://127.0.0.1:8090/cams) as list_cameras() entries:
     ('host:<its id>', name, stream URL, its id). Its id is 'usb:<port>' like ours: settings saved when the camera
@@ -186,7 +192,9 @@ def open_capture(device, index, resolution, probe=False):
     mode first (~0.5-1.3 s with DirectShow, measured without fps impact), done once per camera."""
     if device.startswith("sim:"):
         return SimulatedCapture(index, resolution), SimulatedCapture.NATIVE
-    if isinstance(index, str):  # a network stream URL: size and camera settings are the sender's
+    if isinstance(index, str):  # a network stream URL: camera settings are the sender's
+        if device.startswith("host:"):  # a mirror scales its stream to the size asked (its capture keeps full size)
+            index = f"{index}{'&' if '?' in index else '?'}w={resolution[0]}&h={resolution[1]}"
         cap = cv2.VideoCapture(index, cv2.CAP_FFMPEG,
                                [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 3000])
         if cap.isOpened():
@@ -249,6 +257,7 @@ class Camera(threading.Thread):
         self.fps = 0.0
         self.native = None  # largest resolution the camera supports, once probed
         self.status = "Connecting…"
+        self.ping = None  # network camera: ms to connect to its server, None if unknown or unreachable
         self.opened = (0, None)  # (successful opens, index used by the last one), checked by sync_cameras
         # vision output (written by its vision.ModelWorker)
         self.detections = None  # (xyxy, scores, names) of the last analysed frame
@@ -288,6 +297,19 @@ class Camera(threading.Thread):
         got, best = sorted(frame.shape[:2]), sorted(self.native[::-1])
         return "native" if all(g >= b for g, b in zip(got, best)) else "downscaled"
 
+    def _measure_ping(self):
+        """Every 2 s, the time to open a TCP connection to the stream's server: a ping without ICMP (admin rights)."""
+        while not self._halt.is_set():
+            try:
+                url = urllib.parse.urlsplit(self.index)  # read each time: a mirror may move the stream
+                port = url.port or {"https": 443, "rtsp": 554}.get(url.scheme, 80)
+                start = time.perf_counter()
+                socket.create_connection((url.hostname, port), timeout=2).close()
+                self.ping = (time.perf_counter() - start) * 1000
+            except (OSError, ValueError):
+                self.ping = None
+            self._halt.wait(2)
+
     def reopen(self, resolution):
         self.resolution = resolution
         self._reopen = True
@@ -306,6 +328,8 @@ class Camera(threading.Thread):
         frame_at = last  # last good frame, or the open
         network = isinstance(self.index, str)
         real = not network and not self.device.startswith("sim:")  # a local device: one DirectShow index holder at a time
+        if network:
+            threading.Thread(target=self._measure_ping, daemon=True).start()
         while not self._halt.is_set():
             if cap is not None and self._reopen:
                 self._close(cap)
