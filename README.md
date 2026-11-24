@@ -5,7 +5,9 @@
 ManyCamFlux is a tiny project designed to manage multiple webcam feeds. It provides a simple interface to view, control, and capture screenshots from multiple cameras simultaneously.
 
 > [!IMPORTANT]
-> **🎉 ManyCamFlux 2.1 is out!** Test object-detection models (RF-DETR, ONNX) live on your cameras, display only.
+> **🎉 ManyCamFlux 2.2 is out!** See the [**2.2 release**](https://github.com/MatisAgr/ManyCamFlux/releases/tag/2.2) patch note.
+>
+> 2.1 added object-detection models (RF-DETR, ONNX) tested live on your cameras, display only.
 >
 > 2.0 rewrote almost everything: threaded capture, hot-swap, video recording, timelapse, recordings browser, new camera panel... See the [**2.0 release**](https://github.com/MatisAgr/ManyCamFlux/releases/tag/2.0) patch note.
 >
@@ -21,16 +23,18 @@ ManyCamFlux is a tiny project designed to manage multiple webcam feeds. It provi
 
 ## Features
 
-- **Hot-swap**: plug or unplug cameras while the app runs; they appear or disappear automatically, and each camera gets its settings back when it is plugged in again.
-- **Smooth live view**: each camera is captured in its own thread (MJPG when supported, so HD runs at full frame rate). The grid adapts to the window size and camera ratio.
+- **Hot-swap**: plug or unplug cameras while the app runs; they appear or disappear automatically, and each camera gets its settings back when it is plugged in again. *Refresh* (`F5`) reconnects every camera if a feed ever gets stuck.
+- **Cameras remembered by USB port**: a USB camera's name and settings belong to the port it is plugged into, so even identical cameras keep their settings whatever the plugging order. The panel shows each camera's port, and *Settings* › *Cameras* has a live **camera tester** (preview, name, port, status of every camera, plugged or not), where unplugged cameras can be forgotten.
+- **Smooth live view**: each camera is captured in its own thread (MJPG when supported, so HD runs at full frame rate). Cameras open fast: settings are given at open time and each camera's native resolution is remembered. The grid adapts to the window size and camera ratio.
 - **Camera panel**: name, visibility, resolution, brightness, contrast, saturation, rotation and horizontal/vertical mirror per camera, all applied live. Drag its title bar to detach it, or close it (`Ctrl+B`).
 - **Resolution per camera**: the toolbar sets every camera at once, the panel sets one. Only resolutions up to each camera's native one are offered (detected automatically). The info bar under each view says whether the camera runs at its **native** (largest) resolution or is **downscaled** (and from what). The info bar can be hidden in *Settings*.
-- **Snapshots**: one grid image of all cameras (`S`), or a single camera (right-click).
-- **Timelapse** (`T`): images at a regular interval (one grid image or one image per camera).
+- **Snapshots**: one grid image of all cameras (`S`), or a single camera (right-click). A notice with a preview confirms it; click it to open the image.
+- **Timelapse** (`T`): images at a regular interval (one grid image or one image per camera; *Settings* shows a small diagram of each mode).
 - **Video recording** (`R`): one video per camera or one grid video, at the frame rate you choose.
+- **Single camera**: right-click a camera for *Timelapse this camera only* or *Record this camera only* (one full-resolution file; the red dot marks the recorded camera).
 - **Timed recordings**: a video or a timelapse can stop by itself after a duration (`hh:mm:ss`, more than 24 h allowed), set in *Settings*; the status bar shows the time left.
 - **Long recordings (24 h and more)**: videos are split into parts (every 10 min by default), so a crash or power cut only loses the part being written; recording stops by itself before the disk is full (< 1 GB free). Splitting can be turned off (one file per camera), with a warning: an interrupted single file is lost.
-- **Cut static scenes**: optional motion detection only keeps the frames where something moves (plus 2 s after), so a 24 h recording of a mostly still scene stays short. The date and time can be burned into the video.
+- **Cut static scenes**: optional motion detection only keeps the frames where something moves (plus 2 s after), so a 24 h recording of a mostly still scene stays short. The date and time can be burned into the video, like a surveillance camera: the clock jumps show when nothing happened.
 - **Recordings browser** (`Ctrl+L`): every session with a thumbnail, a built-in player (all parts as one timeline, speed up to ×64, frame by frame with ←/→) showing the real capture time of each frame, and *Render to video* for timelapses, with a progress bar at the bottom of the window. Recordings can be renamed (`F2`) and deleted (`Del`, to the recycle bin), or just one camera's track.
 - **Frame tracking**: each timelapse/video session has a `frames.csv` with the frame number, timestamp, elapsed time and the source frame number of each camera (useful to spot dropped or duplicated frames).
 - **Vision models (display only)**: import object-detection models (RF-DETR exported to ONNX) in *Settings*, then pick one per camera in the panel. Boxes are drawn on the live view, with the detections per second and, for each label found, its count and best confidence at the bottom; snapshots and videos stay raw. A model shared by several cameras is loaded once and serves them in turn, on the CPU (half the cores, so capture and recording keep their frame rate). Models can be renamed, and class names come from the model, a `classes.txt` next to it, or are edited in *Settings*.
@@ -43,8 +47,8 @@ Two versions are available in the [latest release](https://github.com/MatisAgr/M
 
 | File | How to use it | Startup |
 |------|---------------|---------|
-| `ManyCamFlux_2.1_windows.zip` (**recommended**) | Unzip it, then run `ManyCamFlux.exe` inside the folder. Keep the `_internal` folder next to the `.exe`. | Fast |
-| `ManyCamFlux_2.1_portable.exe` | A single file: just run it. | Slower (it unpacks itself on every launch) |
+| `ManyCamFlux_2.2_windows.zip` (**recommended**) | Unzip it, then run `ManyCamFlux.exe` inside the folder. Keep the `_internal` folder next to the `.exe`. | Fast |
+| `ManyCamFlux_2.2_portable.exe` | A single file: just run it. | Slower (it unpacks itself on every launch) |
 
 ## Requirements
 
@@ -91,6 +95,7 @@ pip install -r requirements.txt
 | `Ctrl+L` | Recordings browser |
 | `F1` | Help: version and shortcuts |
 | `Ctrl+O` | Open the output folder |
+| `F5` | Reconnect all cameras |
 | `Ctrl+B` | Show/hide the Cameras panel |
 | `F11` | Fullscreen |
 | `Esc` | Leave focus / fullscreen |

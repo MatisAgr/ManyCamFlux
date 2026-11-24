@@ -161,7 +161,7 @@ def test_feed_refresh_with_new_detections_same_frame(qapp):
     cam = fake_cam()
     cam.status, cam.label, cam.model = "", "cam", "m"
     parent = QWidget()  # keep a reference: Qt deletes the child with it
-    feed = CamFeedWidget(cam, types.SimpleNamespace(recording=False, selected=None), parent)
+    feed = CamFeedWidget(cam, types.SimpleNamespace(recording=lambda cam: False, selected=None), parent)
     cam.detections = (np.zeros((1, 4), np.float32), np.ones(1, np.float32), ["a"])
     feed.refresh()
     cam.detections = (np.zeros((2, 4), np.float32), np.ones(2, np.float32), ["a", "b"])  # same frame_id
@@ -192,7 +192,7 @@ def test_vision_strip_shows_count_and_best_score_per_class(qapp):
     cam = fake_cam()
     cam.status, cam.label, cam.model, cam.det_fps = "", "cam", "m", 3.0
     parent = QWidget()
-    feed = CamFeedWidget(cam, types.SimpleNamespace(recording=False, selected=None), parent)
+    feed = CamFeedWidget(cam, types.SimpleNamespace(recording=lambda cam: False, selected=None), parent)
     cam.detections = (np.zeros((3, 4), np.float32), np.array([0.78, 0.95, 0.91], np.float32),
                       ["arm", "holder", "arm"])
     assert feed._vision_text() == "m · 3.0 det/s · arm ×2 (0.91), holder ×1 (0.95)"

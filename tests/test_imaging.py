@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from imaging import MotionDetector, adjust, best_grid, compose_grid, fit_size, imwrite, letterbox, smooth_rate  # noqa: E402
+from imaging import MotionDetector, adjust, best_grid, compose_grid, fit_size, imwrite, letterbox, safe_name, smooth_rate  # noqa: E402
 
 
 def frame(w, h, value=128):
@@ -87,3 +87,8 @@ def test_smooth_rate_is_not_inflated_by_jitter():
         rate = smooth_rate(rate, 0.010 if i % 2 else 0.0567)
     assert 28 < rate < 32, rate  # averaging 1/interval gave ~60
     assert smooth_rate(0.0, 0.5) == 2.0  # first interval: taken as is
+
+
+def test_safe_name_is_ascii():
+    assert safe_name("Caméra été 1") == "Camera_ete_1"
+    assert safe_name("日本") == "camera"  # nothing left: fallback

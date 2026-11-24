@@ -2,6 +2,7 @@
 import math
 import os
 import re
+import unicodedata
 
 import cv2
 import numpy as np
@@ -139,7 +140,9 @@ def compose_grid(frames, names=None, cell=(640, 480), adaptive=True):
 
 
 def safe_name(text):
-    return re.sub(r"[^\w-]+", "_", text).strip("_") or "camera"
+    """ASCII file name part ('Caméra 1' -> 'Camera_1'): cv2.VideoWriter cannot open non-ASCII paths on Windows."""
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", text).strip("_") or "camera"
 
 
 def imread(path):

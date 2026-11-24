@@ -1,9 +1,11 @@
 """Camera discovery and per-camera capture threads."""
+import ctypes
 import math
 import re
 import sys
 import threading
 import time
+import uuid
 
 import cv2
 import numpy as np
@@ -53,14 +55,49 @@ def resolution_choices(native, current):
 SIMULATED = 0  # number of synthetic cameras added to the real ones (--simulate N); can change at runtime
 
 
+class _DevPropKey(ctypes.Structure):
+    _fields_ = [("fmtid", ctypes.c_byte * 16), ("pid", ctypes.c_ulong)]
+
+
+_LOCATION_PATHS = _DevPropKey((ctypes.c_byte * 16).from_buffer_copy(
+    uuid.UUID("a45c254e-df1c-4efd-8020-67d146a850e0").bytes_le), 37)  # DEVPKEY_Device_LocationPaths
+
+
+def usb_port(qt_name):
+    """Physical USB port of a Windows camera, e.g. 'PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)' (behind a hub:
+    ...#USB(4)#USB(2)), None if unknown (not USB, not Windows). Unlike the device path, it does not depend on
+    the camera's serial number, often identical on every unit of a model, which makes Windows' ids shuffle."""
+    m = re.search(r"(usb#[^#]+#[^#]+)#", qt_name, re.I)  # ...\\?\usb#vid_x&pid_y&mi_00#6&3d13a6e&1&0000#{guid}
+    if sys.platform != "win32" or not m:
+        return None
+    cfg = ctypes.windll.cfgmgr32
+    node, kind, size = ctypes.c_ulong(), ctypes.c_ulong(), ctypes.c_ulong(0)
+    if cfg.CM_Locate_DevNodeW(ctypes.byref(node), m.group(1).replace("#", "\\").upper(), 0):
+        return None
+    cfg.CM_Get_DevNode_PropertyW(node, ctypes.byref(_LOCATION_PATHS), ctypes.byref(kind), None, ctypes.byref(size), 0)
+    buf = ctypes.create_string_buffer(size.value)
+    if not size.value or cfg.CM_Get_DevNode_PropertyW(node, ctypes.byref(_LOCATION_PATHS), ctypes.byref(kind), buf,
+                                                      ctypes.byref(size), 0):
+        return None
+    first = buf.raw.decode("utf-16-le").split("\0")[0]  # a list of paths; the first is the PCI one
+    return re.sub(r"#USBMI\(\d+\)$", "", first) or None  # drop the interface: the port is the device's
+
+
+def port_label(device):
+    """'4', or '4.2' behind a hub, for a port-identified camera; '' otherwise."""
+    return ".".join(re.findall(r"#USB\((\d+)\)", device)) if device.startswith("usb:") else ""
+
+
 def list_cameras():
-    """Connected cameras as [(device_id, description, opencv_index)]. Cheap: safe to poll."""
+    """Connected cameras as [(device_id, description, opencv_index, qt_name)]. Cheap: safe to poll.
+    A USB camera on Windows is identified by its port ('usb:<location path>'), else by its Qt device name."""
     cams = []
     for pos, info in enumerate(QCameraInfo.availableCameras()):
-        device = info.deviceName()
-        m = re.search(r"/dev/video(\d+)$", device)  # Linux: the index is in the device path
-        cams.append((device, info.description(), int(m.group(1)) if m else pos))
-    return cams + [(f"sim:{i}", f"Simulated {i + 1}", i) for i in range(SIMULATED)]
+        name = info.deviceName()
+        port = usb_port(name)
+        m = re.search(r"/dev/video(\d+)$", name)  # Linux: the index is in the device path
+        cams.append((f"usb:{port}" if port else name, info.description(), int(m.group(1)) if m else pos, name))
+    return cams + [(f"sim:{i}", f"Simulated {i + 1}", i, f"sim:{i}") for i in range(SIMULATED)]
 
 
 class SimulatedCapture:
@@ -107,6 +144,13 @@ def open_capture(device, index, resolution, probe=False):
     mode first (~0.5-1.3 s with DirectShow, measured without fps impact), done once per camera."""
     if device.startswith("sim:"):
         return SimulatedCapture(index, resolution), SimulatedCapture.NATIVE
+    mjpg = cv2.VideoWriter_fourcc(*"MJPG")
+    if not probe:  # size and MJPG given at open: one camera start instead of three (measured 1.45 -> 0.36 s)
+        cap = cv2.VideoCapture(index, BACKEND, [cv2.CAP_PROP_FRAME_WIDTH, resolution[0],
+                                                cv2.CAP_PROP_FRAME_HEIGHT, resolution[1], cv2.CAP_PROP_FOURCC, mjpg])
+        if cap.isOpened():
+            return cap, None
+        cap.release()  # backend refusing open parameters: the step-by-step way below
     cap = cv2.VideoCapture(index, BACKEND)
     if not cap.isOpened():
         cap.release()
@@ -120,8 +164,15 @@ def open_capture(device, index, resolution, probe=False):
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
     # MJPG lets USB webcams reach full frame rate at HD (measured 10 -> 30 fps at 720p).
     # Must come after the resolution: DirectShow ignores it otherwise.
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    cap.set(cv2.CAP_PROP_FOURCC, mjpg)
     return cap, native
+
+
+# OpenCV's DirectShow backend keeps ONE global device table indexed by position, not thread-safe. Opening an
+# index already open silently shares that stream (duplicated feed), and releasing either one kills both
+# (measured with OpenCV 4.13). So an index is held by one Camera at a time, and opens/releases are serialized.
+_device_lock = threading.Lock()
+_held = {}  # opencv index -> Camera holding it
 
 
 class Camera(threading.Thread):
@@ -149,6 +200,7 @@ class Camera(threading.Thread):
         self.fps = 0.0
         self.native = None  # largest resolution the camera supports, once probed
         self.status = "Connecting…"
+        self.opened = (0, None)  # (successful opens, index used by the last one), checked by sync_cameras
         # vision output (written by its vision.ModelWorker)
         self.detections = None  # (xyxy, scores, names) of the last analysed frame
         self.det_fps = 0.0
@@ -160,7 +212,9 @@ class Camera(threading.Thread):
         return {"device": self.device, "name": self.label, "brightness": self.brightness,
                 "contrast": self.contrast, "saturation": self.saturation,
                 "rotation_angle": self.rotation, "flip_horizontal": self.flip_h,
-                "flip_vertical": self.flip_v, "visible": self.visible, "resolution": list(self.resolution), "model": self.model}
+                "flip_vertical": self.flip_v, "visible": self.visible, "resolution": list(self.resolution), "model": self.model,
+                # the probe costs ~0.6 s per open: keep its result, for this camera model only
+                "native": list(self.native) if self.native else None, "native_of": self.description}
 
     def apply_settings(self, s):
         self.label = str(s.get("name", self.label))
@@ -174,6 +228,9 @@ class Camera(threading.Thread):
         self.model = s["model"] if isinstance(s.get("model"), str) else None
         if isinstance(s.get("resolution"), list) and len(s["resolution"]) == 2:
             self.resolution = tuple(int(v) for v in s["resolution"])
+        native = s.get("native")
+        if s.get("native_of") == self.description and isinstance(native, list) and len(native) == 2:
+            self.native = tuple(int(v) for v in native)  # another model on this port: probed again
 
     def resolution_tag(self, frame):
         """'native', 'downscaled' (the camera can do more) or '' if unknown. Rotation-proof."""
@@ -189,15 +246,37 @@ class Camera(threading.Thread):
     def stop(self):
         self._halt.set()
 
+    def _close(self, cap):
+        with _device_lock:
+            cap.release()
+            if _held.get(self.opened[1]) is self:
+                del _held[self.opened[1]]
+
     def run(self):
         cap, fails, last = None, 0, time.perf_counter()
+        real = not self.device.startswith("sim:")
         while not self._halt.is_set():
-            if cap is None or self._reopen:
+            if cap is not None and self._reopen:
+                self._close(cap)
+                cap = None
+            if cap is None:
                 self._reopen = False
-                if cap is not None:
-                    cap.release()
                 self.status = "Connecting…"
-                cap, native = open_capture(self.device, self.index, self.resolution, probe=self.native is None)
+                with _device_lock:
+                    index = self.index
+                    holder = _held.get(index) if real else None
+                    if holder is None:
+                        cap, native = open_capture(self.device, index, self.resolution, probe=self.native is None)
+                        if cap is not None:
+                            self.opened = (self.opened[0] + 1, index)
+                            if real:
+                                _held[index] = self
+                    elif holder.index != index:  # it moved since it opened: have it free this index
+                        holder._reopen = True
+                if holder is not None:  # in use by a camera that moved or is closing: soon free
+                    self.status = "Waiting for the device…"
+                    self._halt.wait(0.1)
+                    continue
                 if native and native[0] > 0:
                     self.native = native
                 if cap is None:
@@ -210,7 +289,7 @@ class Camera(threading.Thread):
                 fails += 1
                 if fails >= 50:  # ~2.5 s without a frame: drop the handle and reopen
                     self.status = "No signal"
-                    cap.release()
+                    self._close(cap)
                     cap = None
                 self._halt.wait(0.05)
                 continue
@@ -225,7 +304,7 @@ class Camera(threading.Thread):
             self.frame_id += 1
             self.status = ""
         if cap is not None:
-            cap.release()
+            self._close(cap)
 
     def _make_preview(self, frame):
         dw, dh = self.display_size

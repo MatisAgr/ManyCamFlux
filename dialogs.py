@@ -1,13 +1,14 @@
 import copy
 import os
 
-from PyQt5.QtCore import QFile, QRegularExpression, Qt
-from PyQt5.QtGui import QRegularExpressionValidator
-from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                             QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                             QListWidget, QMessageBox, QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget)
+from PyQt5.QtCore import QFile, QRectF, QRegularExpression, QSize, Qt, QTimer
+from PyQt5.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QRegularExpressionValidator
+from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+                             QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
+                             QLineEdit, QListWidget, QMessageBox, QPushButton, QScrollArea, QSlider, QSpinBox,
+                             QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
-from camera import clamp, resolution_choices
+from camera import clamp, port_label, resolution_choices
 from utils import hms, icon, parse_hms
 
 
@@ -21,6 +22,64 @@ def fill_resolutions(combo, native, current):
     combo.addItems([label for _, label in combo.choices])
     combo.setCurrentIndex([r for r, _ in combo.choices].index(current))
     combo.blockSignals(False)
+
+
+SKETCH_COLORS = [QColor(53, 132, 228), QColor(46, 194, 126), QColor(229, 165, 10), QColor(192, 97, 203)]
+
+
+def mode_sketch(per_camera):
+    """Small diagram of an output mode: 4 cameras -> one grid file, or one file per camera."""
+    dpr = QApplication.instance().devicePixelRatio()
+    pm = QPixmap(int(260 * dpr), int(52 * dpr))
+    pm.setDevicePixelRatio(dpr)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    grey = QColor(150, 155, 165)
+
+    def tile(x, y, w, h, color):
+        p.setPen(Qt.NoPen)
+        p.setBrush(color)
+        p.drawRoundedRect(QRectF(x, y, w, h), 2, 2)
+
+    for i, c in enumerate(SKETCH_COLORS):  # the cameras
+        tile(2 + (i % 2) * 30, 4 + (i // 2) * 24, 26, 20, c)
+    p.setPen(QPen(grey, 2))
+    p.drawLine(72, 26, 100, 26)
+    p.drawLine(94, 20, 100, 26)
+    p.drawLine(94, 32, 100, 26)
+    if per_camera:
+        for i, c in enumerate(SKETCH_COLORS):
+            tile(112 + i * 34, 12, 28, 28, c)
+    else:
+        p.setPen(QPen(grey, 1.5))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(QRectF(112, 2, 60, 48))
+        for i, c in enumerate(SKETCH_COLORS):
+            tile(115 + (i % 2) * 28.5, 5 + (i // 2) * 22.5, 25.5, 19.5, c)
+    p.end()
+    return pm
+
+
+def sketch_label(combo, ext):
+    """mode_sketch for the combo's choice (index 1 = per camera) with a caption, kept in sync."""
+    box = QWidget()
+    layout = QVBoxLayout(box)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(2)
+    picture, caption = QLabel(), QLabel()
+    caption.setEnabled(False)  # greyed, like the other hints
+    caption.setWordWrap(True)
+    layout.addWidget(picture)
+    layout.addWidget(caption)
+
+    def update(i):
+        picture.setPixmap(mode_sketch(bool(i)))
+        caption.setText(f"4 files ({ext}): one per camera, full resolution" if i else
+                        f"1 file ({ext}): all cameras in a grid")
+    combo.currentIndexChanged.connect(update)
+    update(combo.currentIndex())
+    return box
 
 
 def section(title, layout_cls=QFormLayout):
@@ -103,6 +162,8 @@ class CameraPanel(QWidget):
         self.name = QLineEdit()
         self.name.textEdited.connect(self._rename)
         form.addRow("Name", self.name)
+        self.port = QLabel()
+        form.addRow("USB port", self.port)
         self.visible = QCheckBox("Show in grid")
         self.visible.toggled.connect(lambda on: self.cam and self.main.set_visible(self.cam, on))
         form.addRow("", self.visible)
@@ -207,6 +268,10 @@ class CameraPanel(QWidget):
         self.combo.setCurrentIndex(self.combo.findData(cam.device))
         self.combo.blockSignals(False)
         self.name.setText(cam.label)
+        self.port.setText(port_label(cam.device) or "unknown")
+        self.port.setToolTip("The settings belong to this port: any camera plugged into it gets them.\n"
+                             + cam.device.removeprefix("usb:") if cam.device.startswith("usb:") else
+                             "Identified by its device name (not a USB camera, or port not found)")
         fill_resolutions(self.res, cam.native, cam.resolution)
         for w, checked in [(self.visible, cam.visible)] + [(b, getattr(cam, a)) for a, b in self.flips.items()]:
             w.blockSignals(True)
@@ -235,9 +300,29 @@ class CameraPanel(QWidget):
 class CaptureSettingsDialog(QDialog):
     def __init__(self, cfg, parent=None, models_dir=""):
         super().__init__(parent)
-        self.setWindowTitle("Capture settings")
+        self.setWindowTitle("Settings")
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+        pages = []
+
+        def page(title):
+            """A tab whose content scrolls if the screen is too small."""
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+            inner = QWidget()
+            scroll.setWidget(inner)
+            tabs.addTab(scroll, title)
+            pages.append(inner)
+            return inner
+
+        columns = QHBoxLayout(page("Capture"))
+        columns.setSpacing(12)
+        left, right = QVBoxLayout(), QVBoxLayout()
+        columns.addLayout(left, 1)
+        columns.addLayout(right, 1)
 
         box, form = section("Output")
         folder_row = QHBoxLayout()
@@ -247,13 +332,40 @@ class CaptureSettingsDialog(QDialog):
         folder_row.addWidget(self.folder, 1)
         folder_row.addWidget(browse)
         form.addRow("Folder", folder_row)
-        layout.addWidget(box)
-        columns = QHBoxLayout()
-        columns.setSpacing(12)
-        left, right = QVBoxLayout(), QVBoxLayout()
-        columns.addLayout(left, 1)
-        columns.addLayout(right, 1)
-        layout.addLayout(columns)
+        right.addWidget(box)
+
+        cams_page = QVBoxLayout(page("Cameras"))
+        box, form = section("Cameras", QVBoxLayout)
+        self.cam_table = QTableWidget(0, 4)
+        self.cam_table.setHorizontalHeaderLabels(["Live", "Name", "USB port", "Status"])
+        self.cam_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.cam_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.cam_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.cam_table.itemSelectionChanged.connect(self._selection_changed)
+        self.cam_table.verticalHeader().hide()
+        self.cam_table.setIconSize(QSize(96, 54))
+        self.cam_table.verticalHeader().setDefaultSectionSize(60)
+        self.cam_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.cam_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        form.addWidget(self.cam_table, 1)
+        hint = QLabel("Settings belong to the USB port: any camera plugged into a port gets its name and settings. "
+                      "Rename cameras in the Cameras panel.")
+        hint.setWordWrap(True)
+        hint.setEnabled(False)
+        form.addWidget(hint)
+        forget_row = QHBoxLayout()
+        self.forget = QPushButton(icon("trash"), " Forget selected")
+        self.forget.setToolTip("Delete the saved name and settings of the selected unplugged cameras")
+        self.forget.clicked.connect(self._forget_selected)
+        forget_row.addWidget(self.forget)
+        forget_row.addStretch(1)
+        form.addLayout(forget_row)
+        cams_page.addWidget(box)
+        self.forgotten = set()  # device ids of unplugged cameras to forget, applied on OK
+        self._shown_rows = None
+        self._fill_cameras()
+        self._selection_changed()
+        QTimer(self, timeout=self._fill_cameras).start(500)  # live: plug a camera and watch it appear
 
         box, form = section("Timelapse")
         self.interval = QDoubleSpinBox()
@@ -266,6 +378,7 @@ class CaptureSettingsDialog(QDialog):
         self.tl_mode.addItems(["One grid image", "One image per camera"])
         self.tl_mode.setCurrentIndex(int(cfg["timelapse_per_camera"]))
         form.addRow("Output", self.tl_mode)
+        form.addRow("", sketch_label(self.tl_mode, ".jpg per shot"))
         self.tl_duration = DurationField(cfg["timelapse_duration"])
         form.addRow("Duration", self.tl_duration)
         left.addWidget(box)
@@ -280,9 +393,12 @@ class CaptureSettingsDialog(QDialog):
         self.video_mode.addItems(["One grid video", "One video per camera"])
         self.video_mode.setCurrentIndex(int(cfg["video_per_camera"]))
         form.addRow("Output", self.video_mode)
+        form.addRow("", sketch_label(self.video_mode, ".mp4"))
         self.video_duration = DurationField(cfg["video_duration"])
         form.addRow("Duration", self.video_duration)
         self.timestamp = QCheckBox("Burn date and time into the video")
+        self.timestamp.setToolTip("Like a surveillance camera: with \"Cut static scenes\", the jumps of the "
+                                  "clock show when nothing happened")
         self.timestamp.setChecked(cfg["video_timestamp"])
         form.addRow("", self.timestamp)
         left.addWidget(box)
@@ -334,14 +450,15 @@ class CaptureSettingsDialog(QDialog):
         self.info_bar = QCheckBox("Show the info bar under each camera (name, resolution, fps)")
         self.info_bar.setChecked(cfg["show_info_bar"])
         form.addRow("", self.info_bar)
-        left.addWidget(box)
+        right.addWidget(box)
 
+        vision_page = QVBoxLayout(page("Vision models"))
         box, form = section("Vision models")
         self.models_dir, self.models = models_dir, copy.deepcopy(cfg["models"])
         self._original = [(m, m["name"]) for m in self.models]  # for renamed()
         self.imported, self.removed = [], []  # files: trashed on cancel / on OK
         self.model_list = QListWidget()
-        self.model_list.setMaximumHeight(90)
+        self.model_list.setMaximumHeight(160)
         self.model_list.addItems([m["name"] for m in self.models])
         form.addRow(self.model_list)
         buttons = QHBoxLayout()
@@ -373,7 +490,8 @@ class CaptureSettingsDialog(QDialog):
         form.addRow(hint)
         self.model_list.currentRowChanged.connect(self._show_model)
         self._show_model(self.model_list.currentRow())
-        left.addWidget(box)
+        vision_page.addWidget(box)
+        vision_page.addStretch(1)
 
         box, form = section("Grid images")
         self.labels = QCheckBox("Show camera names")
@@ -390,7 +508,56 @@ class CaptureSettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-        self.setMinimumWidth(860)
+        # as big as the content, but never taller than the screen: OK/Cancel always visible
+        avail = (parent.screen() if parent else QApplication.primaryScreen()).availableGeometry()
+        want = QSize(max(p.sizeHint().width() for p in pages) + 60,
+                     max(p.sizeHint().height() for p in pages) + tabs.tabBar().sizeHint().height()
+                     + buttons.sizeHint().height() + 70)  # + margins, spacing, tab frame
+        self.resize(min(max(want.width(), 860), int(avail.width() * 0.95)), min(want.height(), int(avail.height() * 0.9)))
+
+    def _fill_cameras(self):
+        """Connected cameras (live thumbnail, status), then known ones that are unplugged."""
+        main = self.parent()
+        rows = [(f.camera.label, dev, f.camera) for dev, f in getattr(main, "feeds", {}).items()]
+        rows += [(st.get("name", "?"), dev, None) for dev, st in getattr(main, "saved_cams", {}).items()
+                 if dev not in self.forgotten]
+        t = self.cam_table
+        if [(dev, cam is None) for _, dev, cam in rows] != self._shown_rows:  # (un)plugged or forgotten
+            self._shown_rows = [(dev, cam is None) for _, dev, cam in rows]
+            t.clearContents()
+            t.setRowCount(len(rows))
+            for r, (_, dev, cam) in enumerate(rows):
+                for c in range(4):
+                    item = QTableWidgetItem()
+                    if cam is None:
+                        item.setForeground(Qt.gray)
+                    t.setItem(r, c, item)
+                t.item(r, 2).setText(port_label(dev) or "—")
+                t.item(r, 2).setToolTip(dev)
+        for r, (name, dev, cam) in enumerate(rows):
+            status, thumb = "Not connected", QIcon()
+            if cam is not None:
+                frame, preview = cam.frame, cam.preview
+                status = cam.status or (f"● {frame.shape[1]}×{frame.shape[0]} · {cam.fps:.0f} fps"
+                                        if frame is not None else "")
+                if preview is not None:
+                    thumb = QIcon(QPixmap.fromImage(preview[0]).scaled(96, 54, Qt.KeepAspectRatio,
+                                                                       Qt.SmoothTransformation))
+            t.item(r, 0).setIcon(thumb)
+            t.item(r, 1).setText(name)
+            t.item(r, 3).setText(status)
+
+    def _selected_unplugged(self):
+        rows = {i.row() for i in self.cam_table.selectedIndexes()}
+        return [self._shown_rows[r][0] for r in rows if self._shown_rows[r][1]]
+
+    def _selection_changed(self):
+        self.forget.setEnabled(bool(self._selected_unplugged()))
+
+    def _forget_selected(self):
+        self.forgotten.update(self._selected_unplugged())
+        self._fill_cameras()
+        self._selection_changed()
 
     def _model(self):
         row = self.model_list.currentRow()
