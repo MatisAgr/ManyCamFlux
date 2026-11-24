@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboB
                              QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSlider,
                              QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
-from camera import clamp, ping_text, resolution_choices, source_label
+from camera import FPS_CHOICES, clamp, ping_text, resolution_choices, source_label
 from utils import hms, icon, parse_hms
 
 
@@ -172,6 +172,11 @@ class CameraPanel(QWidget):
         self.res.currentIndexChanged.connect(
             lambda i: self.cam and i >= 0 and self.main.set_camera_resolution(self.cam, self.res.choices[i][0]))
         form.addRow("Resolution", self.res)
+        self.max_fps = QComboBox()
+        self.max_fps.addItems([label for _, label in FPS_CHOICES])
+        self.max_fps.currentIndexChanged.connect(
+            lambda i: self.cam and i >= 0 and self.main.set_camera_fps(self.cam, FPS_CHOICES[i][0]))
+        form.addRow("Frame rate", self.max_fps)
         ev.addWidget(box)
 
         box, form = section("Image")
@@ -280,6 +285,12 @@ class CameraPanel(QWidget):
         mirrored = device != cam.device  # a mirror scales its stream to the chosen size
         self.res.setEnabled(not network or mirrored)  # a plain stream URL: its sender sets the size
         self.res.setToolTip("Set by the stream's sender" if network and not mirrored else "")
+        self.max_fps.blockSignals(True)
+        self.max_fps.setCurrentIndex(next((i for i, (v, _) in enumerate(FPS_CHOICES) if v == cam.max_fps), 0))
+        self.max_fps.blockSignals(False)
+        self.max_fps.setEnabled(mirrored)  # only a stream mirror thins its stream on request
+        self.max_fps.setToolTip("Frames per second the mirror sends; Max = every frame of the camera (its capture and "
+                                "vision keep the full rate)" if mirrored else "Only for cameras of a stream mirror (VisionHost)")
         for w, checked in [(self.visible, cam.visible)] + [(b, getattr(cam, a)) for a, b in self.flips.items()]:
             w.blockSignals(True)
             w.setChecked(checked)

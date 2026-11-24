@@ -187,14 +187,21 @@ class SimulatedCapture:
         return True, frame
 
 
-def open_capture(device, index, resolution, probe=False):
+# Frame rate a stream mirror sends (Camera.max_fps): 0 = "Max", every frame of the stream (the camera's rate)
+FPS_CHOICES = [(0, "Max (every frame)"), (15, "15 fps"), (10, "10 fps"), (5, "5 fps"), (2, "2 fps"), (1, "1 fps")]
+
+
+def open_capture(device, index, resolution, probe=False, max_fps=0):
     """(capture or None, native resolution or None). probe=True also asks the camera for its largest
-    mode first (~0.5-1.3 s with DirectShow, measured without fps impact), done once per camera."""
+    mode first (~0.5-1.3 s with DirectShow, measured without fps impact), done once per camera.
+    max_fps: frames per second a stream mirror sends, 0 = all."""
     if device.startswith("sim:"):
         return SimulatedCapture(index, resolution), SimulatedCapture.NATIVE
     if isinstance(index, str):  # a network stream URL: camera settings are the sender's
-        if device.startswith("host:"):  # a mirror scales its stream to the size asked (its capture keeps full size)
+        if device.startswith("host:"):  # a mirror scales and thins its stream as asked (its capture keeps full size/rate)
             index = f"{index}{'&' if '?' in index else '?'}w={resolution[0]}&h={resolution[1]}"
+            if max_fps:
+                index += f"&fps={max_fps}"
         cap = cv2.VideoCapture(index, cv2.CAP_FFMPEG,
                                [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 3000])
         if cap.isOpened():
@@ -250,6 +257,7 @@ class Camera(threading.Thread):
         self.keep_aspect = True
         self.display_size = (640, 360)  # device pixels of the widget showing this camera
         self.model = None  # vision model name (library entry) or None
+        self.max_fps = 0  # stream mirror camera: frames per second it sends (FPS_CHOICES), 0 = all
         # output (written by this thread)
         self.frame = None    # latest processed full-resolution BGR frame
         self.preview = None  # (QImage, backing ndarray) sized for display_size
@@ -271,6 +279,7 @@ class Camera(threading.Thread):
                 "contrast": self.contrast, "saturation": self.saturation,
                 "rotation_angle": self.rotation, "flip_horizontal": self.flip_h,
                 "flip_vertical": self.flip_v, "visible": self.visible, "resolution": list(self.resolution), "model": self.model,
+                "max_fps": self.max_fps,
                 # the probe costs ~0.6 s per open: keep its result, for this camera model only
                 "native": list(self.native) if self.native else None, "native_of": self.description}
 
@@ -284,6 +293,7 @@ class Camera(threading.Thread):
         self.flip_v = bool(s.get("flip_vertical", False))
         self.visible = bool(s.get("visible", True))
         self.model = s["model"] if isinstance(s.get("model"), str) else None
+        self.max_fps = s["max_fps"] if s.get("max_fps") in [v for v, _ in FPS_CHOICES] else 0
         if isinstance(s.get("resolution"), list) and len(s["resolution"]) == 2:
             self.resolution = tuple(int(v) for v in s["resolution"])
         native = s.get("native")
@@ -342,7 +352,8 @@ class Camera(threading.Thread):
                     index = self.index
                     holder = _held.get(index) if real else None
                     if holder is None:
-                        cap, native = open_capture(self.device, index, self.resolution, probe=self.native is None)
+                        cap, native = open_capture(self.device, index, self.resolution, probe=self.native is None,
+                                                   max_fps=self.max_fps)
                         if cap is not None:
                             self.opened = (self.opened[0] + 1, index)
                             if real:

@@ -706,6 +706,13 @@ class CamFluxWidget(QMainWindow):
             print_info(f"{cam.label}: resolution set to {res[0]}x{res[1]}")
             QTimer.singleShot(2000, self.update_grid_layout)
 
+    def set_camera_fps(self, cam, fps):
+        """Frame rate a stream mirror sends for this camera, 0 = every frame. Reopens its stream."""
+        if fps != cam.max_fps:
+            cam.max_fps = fps
+            cam.reopen(cam.resolution)
+            print_info(f"{cam.label}: frame rate set to {fps or 'max'}{' fps' if fps else ''}")
+
     def set_keep_aspect(self, on):
         self.cfg["keep_aspect_ratio"] = on
         for f in self.feeds.values():

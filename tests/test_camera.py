@@ -122,5 +122,19 @@ def test_mirror_stream_asks_the_chosen_size(monkeypatch):
     camera.open_capture("host:usb:x", "http://127.0.0.1:8090/cam/1.mjpg", (640, 480))
     camera.open_capture("host:usb:x", "http://127.0.0.1:8090/cam/1.mjpg?q=50", (640, 480))
     camera.open_capture("http://10.0.0.9/video", "http://10.0.0.9/video", (640, 480))  # plain stream: left as is
+    camera.open_capture("host:usb:x", "http://127.0.0.1:8090/cam/1.mjpg", (640, 480), max_fps=5)
+    camera.open_capture("http://10.0.0.9/video", "http://10.0.0.9/video", (640, 480), max_fps=5)  # not a mirror: ignored
     assert opened == ["http://127.0.0.1:8090/cam/1.mjpg?w=640&h=480", "http://127.0.0.1:8090/cam/1.mjpg?q=50&w=640&h=480",
-                      "http://10.0.0.9/video"]
+                      "http://10.0.0.9/video", "http://127.0.0.1:8090/cam/1.mjpg?w=640&h=480&fps=5", "http://10.0.0.9/video"]
+
+
+def test_max_fps_saved_with_the_camera():
+    from camera import FPS_CHOICES, Camera
+    assert FPS_CHOICES[0][0] == 0  # "Max" first: the default, every frame of the stream
+    saved = Camera("host:usb:x", "cam", "http://h/cam/1.mjpg", (1280, 720))
+    saved.max_fps = 5
+    again = Camera("host:usb:x", "cam", "http://h/cam/1.mjpg", (1280, 720))
+    again.apply_settings(saved.settings())
+    assert again.max_fps == 5
+    again.apply_settings({})  # a config saved before this setting: max
+    assert again.max_fps == 0
