@@ -5,14 +5,14 @@ from collections import Counter
 from datetime import datetime
 
 from PyQt5.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl
-from PyQt5.QtGui import QColor, QDesktopServices, QPainter, QPen
-from PyQt5.QtWidgets import (QAction, QCheckBox, QComboBox, QDockWidget, QFileDialog, QGridLayout,
+from PyQt5.QtGui import QColor, QDesktopServices, QImage, QPainter, QPen, QPixmap
+from PyQt5.QtWidgets import (QAction, QCheckBox, QComboBox, QDockWidget, QFileDialog, QFrame, QGridLayout,
                              QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QProgressBar,
                              QScrollArea, QSizePolicy, QToolBar, QToolButton, QWidget)
 
 from camera import Camera, clamp, fits, list_cameras
 from dialogs import CameraPanel, CaptureSettingsDialog, fill_resolutions
-from imaging import best_grid, compose_grid, draw_label, fit_size, safe_name
+from imaging import best_grid, compose_grid, draw_label, fit_size, resize, safe_name
 from recorder import RenderJob, Timelapse, VideoRecorder, save_async
 from utils import REPO_URL, VERSION, hms, icon, print_error, print_info, print_success, print_warning
 
@@ -60,6 +60,46 @@ def load_config(path):
         return cfg, []
 
 
+class SnapshotToast(QFrame):
+    """'Snapshot saved' notice with a thumbnail, bottom-right of the window, for a few seconds.
+    A click opens the image."""
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.setObjectName("toast")
+        self.setStyleSheet("#toast { background: rgba(24, 26, 30, 235); border: 1px solid #3a3f47;"
+                           " border-radius: 8px; } QLabel { color: #e1e3e7; background: transparent; }")
+        self.setCursor(Qt.PointingHandCursor)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 8, 12, 8)
+        self.thumb, self.text = QLabel(), QLabel()
+        layout.addWidget(self.thumb)
+        layout.addWidget(self.text)
+        self.timer = QTimer(self, singleShot=True, timeout=self.hide)
+        self.path = None
+        self.hide()
+
+    def show_snapshot(self, img, path):
+        """img: BGR image (or a reduced version of it), shown at most 200x120."""
+        h, w = img.shape[:2]
+        w, h = fit_size(w, h, 200, 120)
+        img = resize(img, w, h)
+        self.thumb.setPixmap(QPixmap.fromImage(QImage(img.data, w, h, img.strides[0], QImage.Format_BGR888).copy()))
+        self.text.setText(f"<b>Snapshot saved</b><br><span style='color:#9aa0a8'>{os.path.basename(path)}</span>"
+                          f"<br><span style='color:#9aa0a8'>Click to open</span>")
+        self.path = path
+        self.adjustSize()
+        win = self.parentWidget()
+        self.move(win.width() - self.width() - 16, win.height() - win.statusBar().height() - self.height() - 16)
+        self.show()
+        self.raise_()
+        self.timer.start(4000)
+
+    def mousePressEvent(self, event):
+        self.hide()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(self.path))
+
+
 class CamFeedWidget(QWidget):
     """Paints the camera preview produced by its Camera thread, plus an info overlay."""
 
@@ -67,6 +107,7 @@ class CamFeedWidget(QWidget):
         super().__init__(parent)
         self.camera, self.main = camera, main
         self._shown = None
+        self.opened = (0, None)  # camera.opened as seen by the last sync_cameras
         self.setMinimumSize(160, 120)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -75,7 +116,7 @@ class CamFeedWidget(QWidget):
     def refresh(self):
         """Repaint only when something visible changed (new frame, status, name...)."""
         c = self.camera
-        key = (c.frame_id, c.status, c.label, self.main.recording, self.main.selected is c,
+        key = (c.frame_id, c.status, c.label, self.main.recording(c), self.main.selected is c,
                c.model, id(c.detections), c.det_status)  # id: comparing numpy arrays raises
         if key != self._shown:
             self._shown, self._shown_dets = key, c.detections  # keep it alive so its id is not reused
@@ -132,7 +173,7 @@ class CamFeedWidget(QWidget):
 
         if c.status:
             p.drawText(QRect(0, 0, w, h - bar), Qt.AlignCenter, c.status)
-        if self.main.recording:
+        if self.main.recording(c):
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(220, 50, 47))
             p.drawEllipse(w - 22, 10, 12, 12)
@@ -181,6 +222,10 @@ class CamFeedWidget(QWidget):
         m = self.main
         menu = QMenu(self)
         menu.addAction(icon("camera"), "Snapshot this camera", lambda: m.snapshot_camera(self.camera))
+        menu.addAction(icon("timer"), "Stop timelapse" if m.timelapse else "Timelapse this camera only",
+                       lambda: m.toggle_timelapse(self.camera))
+        menu.addAction(icon("record"), "Stop recording" if m.video else "Record this camera only",
+                       lambda: m.toggle_video(self.camera))
         menu.addSeparator()
         menu.addAction(icon("rotate-left"), "Rotate left", lambda: m.rotate(self.camera, -90))
         menu.addAction(icon("rotate-right"), "Rotate right", lambda: m.rotate(self.camera, 90))
@@ -215,6 +260,7 @@ class CamFluxWidget(QMainWindow):
             print_error(f"Ignoring unreadable config {CONFIG_PATH}: {e}")
             self.cfg, cams = dict(DEFAULTS), []
         self._store_camera_settings(cams)
+        self._present = None  # camera list seen by the last sync_cameras
 
         self._build_ui()
         self.sync_cameras()
@@ -278,6 +324,8 @@ class CamFluxWidget(QMainWindow):
         self._action(tb, "folder", "Open folder", self.open_output_folder, "Ctrl+O", "Open the output folder")
         self._action(tb, "settings", "Settings", self.show_capture_settings, "Ctrl+,", "Capture settings")
         tb.addSeparator()
+        self._action(tb, "refresh", "Refresh", self.refresh_cameras, "F5",
+                     "Reconnect all cameras (if a feed is frozen, black or duplicated)")
         panel = self.dock.toggleViewAction()
         panel.setText("Cameras")
         panel.setIcon(icon("sidebar"))
@@ -301,6 +349,7 @@ class CamFluxWidget(QMainWindow):
             self.statusBar().addPermanentWidget(w)
         self.render_bar.hide()
         self.render_cancel.hide()
+        self.toast = SnapshotToast(self)
 
     def _dock_title_bar(self):
         """Own title bar: Qt's float/close buttons are tiny, especially on high-DPI screens.
@@ -366,7 +415,7 @@ class CamFluxWidget(QMainWindow):
         action = QAction(icon(icon_name), text, self, checkable=checkable)
         action.setShortcut(shortcut)
         action.setToolTip(f"{tip} ({shortcut})")
-        action.triggered.connect(slot)
+        action.triggered.connect(lambda: slot())  # don't pass `checked` to slots with optional args
         toolbar.addAction(action)
         if checkable:
             toolbar.widgetForAction(action).setObjectName("rec")  # red when active (see theme)
@@ -469,9 +518,9 @@ class CamFluxWidget(QMainWindow):
     def keep_aspect_ratio(self):
         return self.cfg["keep_aspect_ratio"]
 
-    @property
-    def recording(self):
-        return self.video is not None or self.timelapse is not None
+    def recording(self, cam):
+        """True if a timelapse or video is capturing cam."""
+        return any(r is not None and r.device in (None, cam.device) for r in (self.timelapse, self.video))
 
     def _store_camera_settings(self, cams):
         """Settings are matched to cameras by device id; old configs (no id) by order."""
@@ -480,16 +529,23 @@ class CamFluxWidget(QMainWindow):
 
     def sync_cameras(self):
         present = list_cameras()
-        ids = {dev for dev, _, _ in present}
+        ids = {cam[0] for cam in present}
         gone = [dev for dev in self.feeds if dev not in ids]
         for dev in gone:
             self.remove_camera(dev)
+        changed, self._present = present != self._present, present
         added = False
-        for dev, desc, index in present:
+        for dev, desc, index, qt_name in present:
             if dev in self.feeds:
-                self.feeds[dev].camera.index = index  # indices shift when another camera is unplugged
+                feed, cam = self.feeds[dev], self.feeds[dev].camera
+                cam.index = index  # indices shift when another camera is unplugged
+                # a (re)open racing a (un)plug may have used a stale index, i.e. grabbed another camera: redo it
+                opened = cam.opened
+                if opened != feed.opened and (changed or opened[1] != index):
+                    cam.reopen(cam.resolution)
+                feed.opened = opened
             else:
-                self.add_camera(dev, desc, index)
+                self.add_camera(dev, desc, index, qt_name)
                 added = True
         if gone or added:
             self.update_grid_layout()
@@ -497,11 +553,20 @@ class CamFluxWidget(QMainWindow):
             n = len(self.feeds)
             self.count_label.setText(f"{n} camera{'s' if n != 1 else ''}")
 
-    def add_camera(self, device, description, index):
+    def refresh_cameras(self):
+        """Close and reopen every camera; settings are kept (restored like a re-plug)."""
+        for dev in list(self.feeds):
+            self.remove_camera(dev)
+        self._present = None
+        self.sync_cameras()
+
+    def add_camera(self, device, description, index, qt_name=None):
         cam = Camera(device, description, index, tuple(self.cfg["resolution"]))
         if any(f.camera.label == cam.label for f in self.feeds.values()):
             cam.label = f"{description} ({len(self.feeds) + 1})"
-        saved = self.saved_cams.pop(device, None) or (self.legacy_cams.pop(0) if self.legacy_cams else None)
+        # qt_name: the id used before 2.2 (Qt device name), so settings saved under it carry over to the port once
+        saved = (self.saved_cams.pop(device, None) or self.saved_cams.pop(qt_name, None)
+                 or (self.legacy_cams.pop(0) if self.legacy_cams else None))
         if saved:
             cam.apply_settings(saved)
         cam.keep_aspect = self.keep_aspect_ratio
@@ -634,10 +699,11 @@ class CamFluxWidget(QMainWindow):
             f.update()
 
     # ---------- capture ----------
-    def shots(self):
-        """Latest frame of each visible camera: [(device, label, frame, frame_id)]. Thread-safe."""
+    def shots(self, device=None):
+        """Latest frame of each visible camera (or of `device` only): [(device, label, frame, frame_id)]. Thread-safe."""
         cams = [f.camera for f in list(self.feeds.values())]
-        return [(c.device, c.label, c.frame, c.frame_id) for c in cams if c.visible and c.frame is not None]
+        return [(c.device, c.label, c.frame, c.frame_id) for c in cams
+                if c.visible and c.frame is not None and device in (None, c.device)]
 
     def compose(self, shots, max_width=None):
         names = [s[1] for s in shots] if self.cfg["show_labels_in_screenshots"] else None
@@ -667,6 +733,7 @@ class CamFluxWidget(QMainWindow):
         path = os.path.join(self.output_dir("snapshots"), f"snapshot_all_{stamp()}.jpg")
         save_async(path, lambda: self.compose(shots))
         self.notify(f"Snapshot saved: {path}")
+        self.toast.show_snapshot(self.compose(shots, max_width=480), path)  # small cells: cheap
 
     def snapshot_camera(self, cam):
         frame = cam.frame
@@ -676,8 +743,10 @@ class CamFluxWidget(QMainWindow):
         path = os.path.join(self.output_dir("snapshots"), f"snapshot_{safe_name(cam.label)}_{stamp()}.jpg")
         save_async(path, lambda: draw_label(frame.copy(), label) if label else frame)
         self.notify(f"Snapshot saved: {path}")
+        self.toast.show_snapshot(frame, path)
 
-    def toggle_timelapse(self):
+    def toggle_timelapse(self, cam=None):
+        """Start (all visible cameras, or `cam` only) or stop the timelapse."""
         try:
             if self.timelapse:
                 n, folder = self.timelapse.stop(), self.timelapse.folder
@@ -685,15 +754,20 @@ class CamFluxWidget(QMainWindow):
                 self.notify(f"Timelapse stopped: {n} frames in {folder}")
             else:
                 folder = self.output_dir(f"timelapse_{stamp()}")
-                self.timelapse = Timelapse(folder, self.cfg["timelapse_interval"], self.cfg["timelapse_per_camera"],
-                                           self.shots, self.compose)
+                device = cam.device if cam else None
+                self.timelapse = Timelapse(folder, self.cfg["timelapse_interval"],
+                                           self.cfg["timelapse_per_camera"] or cam is not None,
+                                           lambda: self.shots(device), self.compose)
                 self.timelapse.limit = self.cfg["timelapse_duration"]
-                self.notify(f"Timelapse started every {self.cfg['timelapse_interval']:g}s → {folder}")
+                self.timelapse.device = device
+                self.notify(f"Timelapse{f' of {cam.label}' if cam else ''} started every "
+                            f"{self.cfg['timelapse_interval']:g}s → {folder}")
         except OSError as e:
             QMessageBox.warning(self, "Timelapse", str(e))
         self.tl_action.setChecked(self.timelapse is not None)
 
-    def toggle_video(self):
+    def toggle_video(self, cam=None):
+        """Start (all visible cameras, or `cam` only) or stop the video recording."""
         try:
             if self.video:
                 n, folder, dropped = self.video.stop(), self.video.folder, self.video.dropped
@@ -705,14 +779,17 @@ class CamFluxWidget(QMainWindow):
             else:
                 folder = self.output_dir(f"video_{stamp()}")
                 c = self.cfg
-                self.video = VideoRecorder(folder, c["video_fps"], c["video_per_camera"], self.shots, self.compose_video,
+                device = cam.device if cam else None
+                self.video = VideoRecorder(folder, c["video_fps"], c["video_per_camera"] or cam is not None,
+                                           lambda: self.shots(device), self.compose_video,
                                            motion=c["video_motion_threshold"] if c["video_motion_only"] else None,
                                            timestamp=c["video_timestamp"],
                                            segment_minutes=c["video_segment_minutes"] if c["video_split"] else None)
                 self.video.limit = c["video_duration"]
+                self.video.device = device
                 self.video.start()
                 risk = "" if self.cfg["video_split"] else " (single file: unreadable if interrupted)"
-                self.notify(f"Recording at {self.cfg['video_fps']} fps → {folder}{risk}")
+                self.notify(f"Recording{f' {cam.label}' if cam else ''} at {self.cfg['video_fps']} fps → {folder}{risk}")
         except OSError as e:
             QMessageBox.warning(self, "Recording", str(e))
         self.rec_action.setChecked(self.video is not None)
@@ -724,6 +801,8 @@ class CamFluxWidget(QMainWindow):
         dialog = CaptureSettingsDialog(self.cfg, self, MODELS_DIR)
         if dialog.exec_():
             self.cfg.update(dialog.values())
+            for dev in dialog.forgotten:  # unplugged cameras whose settings the user deleted
+                self.saved_cams.pop(dev, None)
             renamed = dialog.renamed()  # one pass, so swapping two names works
             self.models = {renamed.get(name, name): worker for name, worker in self.models.items()}
             for f in self.feeds.values():
@@ -750,6 +829,7 @@ class CamFluxWidget(QMainWindow):
             <tr><td><b>S</b></td><td>Snapshot of all cameras</td></tr>
             <tr><td><b>T</b> / <b>R</b></td><td>Start/stop timelapse / video</td></tr>
             <tr><td><b>Ctrl+L</b></td><td>Recordings (play, rename, delete, render)</td></tr>
+            <tr><td><b>F5</b></td><td>Reconnect all cameras (frozen, black or duplicated feed)</td></tr>
             <tr><td><b>Ctrl+B</b></td><td>Cameras panel (drag its title bar to detach it)</td></tr>
             <tr><td><b>Ctrl+,</b></td><td>Capture settings</td></tr>
             <tr><td><b>F11</b> / <b>Esc</b></td><td>Fullscreen / back to the grid</td></tr>

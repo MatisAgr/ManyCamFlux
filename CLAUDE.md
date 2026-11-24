@@ -2,7 +2,7 @@
 
 PyQt5 + OpenCV desktop app showing many webcams in one grid, with snapshots, timelapse and video recording. Windows is the main target.
 
-Version: `utils.VERSION` (2.0), shown by Help (F1) and `--version`.
+Version: `utils.VERSION` (2.2), shown by Help (F1) and `--version`.
 
 ## Run / test
 - `python ManyCamFlux.py`, or `python ManyCamFlux.py --simulate N` to add N synthetic 30 fps cameras (`camera.SimulatedCapture`, device id `sim:<n>`). Changing `camera.SIMULATED` at runtime exercises the hot-swap path.
@@ -21,9 +21,10 @@ Version: `utils.VERSION` (2.0), shown by Help (F1) and `--version`.
 
 ## Gotchas
 - PyQt5 aborts the whole process on an exception raised in a slot, with no traceback. `ManyCamFlux.main` installs `sys.excepthook` to log instead; a test script that skips `main()` crashes silently (exit 127), so set `PYTHONIOENCODING=utf-8` there because status texts contain `●`.
-- Cameras are identified by the Qt `QCameraInfo.deviceName()`. The OpenCV index is the camera's position in that list (DirectShow uses the same order on Windows), and it shifts when another camera is unplugged, so `sync_cameras` refreshes `camera.index`.
-- With DirectShow, set the MJPG FOURCC **after** the width/height, or it is ignored (720p drops from 30 to 10 fps).
-- Native resolution = what the driver picks for an impossible 10000x10000 request (`open_capture(probe=True)`, once per camera, ~1 s, no fps impact). `Camera.resolution_tag` compares it with the actual frame. Resolution lists never go above it: `camera.resolution_choices` / `clamp`, refreshed by `CamFluxWidget._check_natives` once natives arrive.
+- A USB camera on Windows is identified by its port: `device = "usb:<location path>"` (`camera.usb_port`, cfgmgr32 via ctypes), because identical cameras often share a fake USB serial and Windows' device paths then shuffle with the plugging order. Other cameras keep the Qt `QCameraInfo.deviceName()`, which `list_cameras` also returns so pre-2.2 settings carry over. The OpenCV index is the camera's position in that list (DirectShow uses the same order on Windows), and it shifts when another camera is unplugged, so `sync_cameras` refreshes `camera.index`.
+- OpenCV's DirectShow backend is ONE global device table indexed by position, not thread-safe: opening an index already open "succeeds" and shares that stream (duplicated feed), and releasing either kills both (measured, OpenCV 4.13). `camera._held` gives each index to one `Camera` (one that moved frees it on demand) and `_device_lock` serializes opens/releases: always open/release through `Camera.run`/`_close`.
+- With DirectShow, set the MJPG FOURCC **after** the width/height, or it is ignored (720p drops from 30 to 10 fps). Each `cap.set` of size or FOURCC restarts the camera (~0.5 s), so `open_capture` passes size + MJPG as open parameters (one start, measured 1.45 -> 0.36 s) and only falls back to the step-by-step sets when probing or if the backend refuses them.
+- Native resolution = what the driver picks for an impossible 10000x10000 request (`open_capture(probe=True)`, ~0.6 s, no fps impact). It is saved with the camera's settings (`native`, `native_of` = model description) and reused on later launches unless another model is on that port. `Camera.resolution_tag` compares it with the actual frame. Resolution lists never go above it: `camera.resolution_choices` / `clamp`, refreshed by `CamFluxWidget._check_natives` once natives arrive.
 - Each camera has its own `resolution` (saved per camera); `cfg["resolution"]` is the toolbar default applied to all. Grid images use the largest frame as cell size.
 - A rich-text `QLabel` inside a custom dock title bar swallows the mouse press and breaks dock dragging: keep title-bar labels `WA_TransparentForMouseEvents`.
 - Recording deletions go through `QFile.moveToTrash` (recoverable). Session folders keep their `<kind>_<date>_<ms>` prefix when renamed (`recordings.renamed_path`).
