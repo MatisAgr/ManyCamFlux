@@ -5,10 +5,10 @@ from PyQt5.QtCore import QFile, QRectF, QRegularExpression, QSize, Qt, QTimer
 from PyQt5.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QRegularExpressionValidator
 from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                              QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-                             QLineEdit, QListWidget, QMessageBox, QPushButton, QScrollArea, QSlider, QSpinBox,
-                             QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+                             QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSlider,
+                             QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
-from camera import clamp, port_label, resolution_choices
+from camera import clamp, resolution_choices, source_label
 from utils import hms, icon, parse_hms
 
 
@@ -268,11 +268,17 @@ class CameraPanel(QWidget):
         self.combo.setCurrentIndex(self.combo.findData(cam.device))
         self.combo.blockSignals(False)
         self.name.setText(cam.label)
-        self.port.setText(port_label(cam.device) or "unknown")
-        self.port.setToolTip("The settings belong to this port: any camera plugged into it gets them.\n"
-                             + cam.device.removeprefix("usb:") if cam.device.startswith("usb:") else
-                             "Identified by its device name (not a USB camera, or port not found)")
+        self.port.setText(source_label(cam.device) or "unknown")
+        device = cam.device.removeprefix("host:")
+        network = device != cam.device or "://" in device  # served by a stream mirror, or a stream URL
+        self.port.setToolTip(("Network stream (Settings > Cameras)\n" if network else "")
+                             + ("The settings belong to this port: any camera plugged into it gets them.\n"
+                                + device.removeprefix("usb:") if device.startswith("usb:") else
+                                device if "://" in device else
+                                "Identified by its device name (not a USB camera, or port not found)"))
         fill_resolutions(self.res, cam.native, cam.resolution)
+        self.res.setEnabled(not network)  # the sender sets the size of its stream
+        self.res.setToolTip("Set by the stream's sender" if network else "")
         for w, checked in [(self.visible, cam.visible)] + [(b, getattr(cam, a)) for a, b in self.flips.items()]:
             w.blockSignals(True)
             w.setChecked(checked)
@@ -337,7 +343,7 @@ class CaptureSettingsDialog(QDialog):
         cams_page = QVBoxLayout(page("Cameras"))
         box, form = section("Cameras", QVBoxLayout)
         self.cam_table = QTableWidget(0, 4)
-        self.cam_table.setHorizontalHeaderLabels(["Live", "Name", "USB port", "Status"])
+        self.cam_table.setHorizontalHeaderLabels(["Live", "Name", "Source", "Status"])
         self.cam_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.cam_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.cam_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -360,6 +366,23 @@ class CaptureSettingsDialog(QDialog):
         forget_row.addWidget(self.forget)
         forget_row.addStretch(1)
         form.addLayout(forget_row)
+        cams_page.addWidget(box)
+
+        box, form = section("Network cameras", QVBoxLayout)
+        self.stream_urls = QPlainTextEdit("\n".join(cfg["stream_urls"]))
+        self.stream_urls.setPlaceholderText("http://127.0.0.1:8090/cams\nhttp://192.168.1.20:8080/video\n"
+                                            "rtsp://192.168.1.21:554/stream1")
+        self.stream_urls.setFixedHeight(90)
+        form.addWidget(self.stream_urls)
+        hint = QLabel("One URL per line, shown next to the USB cameras. Any stream FFmpeg reads works: MJPEG over "
+                      "HTTP (IP cameras, phone apps, ESP32-CAM), RTSP, HLS (.m3u8). Not a still image (.jpg).<br>"
+                      "<b>Stream mirror</b>: a URL ending in <code>/cams</code> (e.g. a VisionHost's "
+                      "<code>http://127.0.0.1:8090/cams</code>) adds all the cameras it serves. Useful when another "
+                      "program needs the same USB cameras: a USB camera opens in one program only, so the mirror "
+                      "opens them and both read its streams. The USB cameras it serves are not opened here.")
+        hint.setWordWrap(True)
+        hint.setEnabled(False)
+        form.addWidget(hint)
         cams_page.addWidget(box)
         self.forgotten = set()  # device ids of unplugged cameras to forget, applied on OK
         self._shown_rows = None
@@ -532,7 +555,7 @@ class CaptureSettingsDialog(QDialog):
                     if cam is None:
                         item.setForeground(Qt.gray)
                     t.setItem(r, c, item)
-                t.item(r, 2).setText(port_label(dev) or "—")
+                t.item(r, 2).setText(source_label(dev) or "—")
                 t.item(r, 2).setToolTip(dev)
         for r, (name, dev, cam) in enumerate(rows):
             status, thumb = "Not connected", QIcon()
@@ -663,4 +686,6 @@ class CaptureSettingsDialog(QDialog):
                 "show_labels_in_screenshots": self.labels.isChecked(),
                 "adaptive_resolution": self.adaptive.isChecked(), "show_info_bar": self.info_bar.isChecked(),
                 "timelapse_duration": self.tl_duration.value(), "video_duration": self.video_duration.value(),
-                "models": self.models}
+                "models": self.models,
+                "stream_urls": list(dict.fromkeys(u.strip() for u in self.stream_urls.toPlainText().splitlines()
+                                                  if u.strip()))}

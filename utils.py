@@ -4,7 +4,7 @@ import sys
 
 from PyQt5.QtGui import QIcon
 
-VERSION = "2.2"
+VERSION = "2.3"
 REPO_URL = "https://github.com/MatisAgr/ManyCamFlux"
 
 
