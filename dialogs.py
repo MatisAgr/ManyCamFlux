@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboB
                              QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSlider,
                              QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
-from camera import clamp, resolution_choices, source_label
+from camera import clamp, ping_text, resolution_choices, source_label
 from utils import hms, icon, parse_hms
 
 
@@ -277,8 +277,9 @@ class CameraPanel(QWidget):
                                 device if "://" in device else
                                 "Identified by its device name (not a USB camera, or port not found)"))
         fill_resolutions(self.res, cam.native, cam.resolution)
-        self.res.setEnabled(not network)  # the sender sets the size of its stream
-        self.res.setToolTip("Set by the stream's sender" if network else "")
+        mirrored = device != cam.device  # a mirror scales its stream to the chosen size
+        self.res.setEnabled(not network or mirrored)  # a plain stream URL: its sender sets the size
+        self.res.setToolTip("Set by the stream's sender" if network and not mirrored else "")
         for w, checked in [(self.visible, cam.visible)] + [(b, getattr(cam, a)) for a, b in self.flips.items()]:
             w.blockSignals(True)
             w.setChecked(checked)
@@ -563,6 +564,8 @@ class CaptureSettingsDialog(QDialog):
                 frame, preview = cam.frame, cam.preview
                 status = cam.status or (f"● {frame.shape[1]}×{frame.shape[0]} · {cam.fps:.0f} fps"
                                         if frame is not None else "")
+                if cam.ping is not None:
+                    status += f" · {ping_text(cam.ping)}"
                 if preview is not None:
                     thumb = QIcon(QPixmap.fromImage(preview[0]).scaled(96, 54, Qt.KeepAspectRatio,
                                                                        Qt.SmoothTransformation))

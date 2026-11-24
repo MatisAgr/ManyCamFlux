@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (QAction, QCheckBox, QComboBox, QDockWidget, QFileDi
                              QScrollArea, QSizePolicy, QToolBar, QToolButton, QWidget)
 
 import camera as camera_module
-from camera import UNAVAILABLE, Camera, clamp, fits, list_cameras
+from camera import UNAVAILABLE, Camera, clamp, fits, list_cameras, ping_text
 from dialogs import CameraPanel, CaptureSettingsDialog, fill_resolutions
 from imaging import best_grid, compose_grid, draw_label, fit_size, resize, safe_name
 from recorder import RenderJob, Timelapse, VideoRecorder, save_async
@@ -120,7 +120,7 @@ class CamFeedWidget(QWidget):
         """Repaint only when something visible changed (new frame, status, name...)."""
         c = self.camera
         key = (c.frame_id, c.status, c.label, self.main.recording(c), self.main.selected is c,
-               c.model, id(c.detections), c.det_status)  # id: comparing numpy arrays raises
+               c.model, id(c.detections), c.det_status, ping_text(c.ping))  # id: comparing numpy arrays raises
         if key != self._shown:
             self._shown, self._shown_dets = key, c.detections  # keep it alive so its id is not reused
             self.update()
@@ -164,6 +164,8 @@ class CamFeedWidget(QWidget):
                         f"{size} · downscaled · {c.fps:.0f} fps"
                 else:
                     info = f"{size}{' · native' if tag else ''} · {c.fps:.0f} fps"
+            if c.ping is not None:  # a network camera: also shown while its stream is down
+                info = f"{info} · {ping_text(c.ping)}" if info else ping_text(c.ping)
             info_w = p.fontMetrics().horizontalAdvance(info) + 10
             p.setPen(QColor(170, 170, 175))
             p.drawText(QRect(0, h - bar, w - 10, bar), Qt.AlignVCenter | Qt.AlignRight, info)
