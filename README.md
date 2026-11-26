@@ -5,7 +5,9 @@
 ManyCamFlux is a tiny project designed to manage multiple webcam feeds. It provides a simple interface to view, control, and capture screenshots from multiple cameras simultaneously.
 
 > [!IMPORTANT]
-> **🎉 ManyCamFlux 2.2 is out!** See the [**2.2 release**](https://github.com/MatisAgr/ManyCamFlux/releases/tag/2.2) patch note.
+> **🎉 ManyCamFlux 2.3 is out!** Network cameras (HTTP, RTSP) and stream mirrors next to your USB cameras. See the [**2.3 release**](https://github.com/MatisAgr/ManyCamFlux/releases/tag/2.3) patch note.
+>
+> 2.2 remembers cameras by their USB port and records a single camera.
 >
 > 2.1 added object-detection models (RF-DETR, ONNX) tested live on your cameras, display only.
 >
@@ -17,7 +19,9 @@ ManyCamFlux is a tiny project designed to manage multiple webcam feeds. It provi
 
 ![Recordings browser](docs/screenshots/recordings.png)
 
-![Settings](docs/screenshots/settings.png)
+| Settings › Capture | Settings › Cameras | Settings › Vision models |
+|:---:|:---:|:---:|
+| ![Settings, Capture tab](docs/screenshots/settings_capture.png) | ![Settings, Cameras tab: camera tester and network cameras](docs/screenshots/settings_cameras.png) | ![Settings, Vision models tab](docs/screenshots/settings_vision.png) |
 
 *Screenshots taken with simulated cameras (`--simulate 6`).*
 
@@ -25,6 +29,7 @@ ManyCamFlux is a tiny project designed to manage multiple webcam feeds. It provi
 
 - **Hot-swap**: plug or unplug cameras while the app runs; they appear or disappear automatically, and each camera gets its settings back when it is plugged in again. *Refresh* (`F5`) reconnects every camera if a feed ever gets stuck.
 - **Cameras remembered by USB port**: a USB camera's name and settings belong to the port it is plugged into, so even identical cameras keep their settings whatever the plugging order. The panel shows each camera's port, and *Settings* › *Cameras* has a live **camera tester** (preview, name, port, status of every camera, plugged or not), where unplugged cameras can be forgotten.
+- **Network cameras**: add stream URLs in *Settings* › *Cameras* (MJPEG over HTTP, RTSP, HLS), shown next to the USB cameras. A **stream mirror**'s list (a URL ending in `/cams`) adds all its cameras at once, so another program can use the same USB cameras; pick the resolution and frame rate of each mirror camera in the panel. A lost stream shows *Stream unavailable* and reconnects by itself, and the info bar shows the ping to its server.
 - **Smooth live view**: each camera is captured in its own thread (MJPG when supported, so HD runs at full frame rate). Cameras open fast: settings are given at open time and each camera's native resolution is remembered. The grid adapts to the window size and camera ratio.
 - **Camera panel**: name, visibility, resolution, brightness, contrast, saturation, rotation and horizontal/vertical mirror per camera, all applied live. Drag its title bar to detach it, or close it (`Ctrl+B`).
 - **Resolution per camera**: the toolbar sets every camera at once, the panel sets one. Only resolutions up to each camera's native one are offered (detected automatically). The info bar under each view says whether the camera runs at its **native** (largest) resolution or is **downscaled** (and from what). The info bar can be hidden in *Settings*.
@@ -47,8 +52,8 @@ Two versions are available in the [latest release](https://github.com/MatisAgr/M
 
 | File | How to use it | Startup |
 |------|---------------|---------|
-| `ManyCamFlux_2.2_windows.zip` (**recommended**) | Unzip it, then run `ManyCamFlux.exe` inside the folder. Keep the `_internal` folder next to the `.exe`. | Fast |
-| `ManyCamFlux_2.2_portable.exe` | A single file: just run it. | Slower (it unpacks itself on every launch) |
+| `ManyCamFlux_2.3_windows.zip` (**recommended**) | Unzip it, then run `ManyCamFlux.exe` inside the folder. Keep the `_internal` folder next to the `.exe`. | Fast |
+| `ManyCamFlux_2.3_portable.exe` | A single file: just run it. | Slower (it unpacks itself on every launch) |
 
 ## Requirements
 
