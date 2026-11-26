@@ -26,7 +26,7 @@ def wait_for(cond, timeout=20):
 
 
 def fake_cam():
-    return types.SimpleNamespace(frame=np.zeros((480, 640, 3), np.uint8), frame_id=1,
+    return types.SimpleNamespace(frame=np.zeros((480, 640, 3), np.uint8), frame_id=1, ping=None,
                                  detections=None, det_fps=0.0, det_status="")
 
 
@@ -174,11 +174,11 @@ def test_panel_shows_and_clears_a_missing_model(qapp):
     main = types.SimpleNamespace(cfg={"models": []}, feeds={}, select_camera=lambda c: None,
                                  set_camera_model=lambda cam, name: calls.append(name),
                                  save_config=print, import_config=print, set_visible=print, rotate=print,
-                                 set_flip=print, set_camera_resolution=print)
+                                 set_flip=print, set_camera_resolution=print, set_camera_fps=print)
     panel = CameraPanel(main)
     cam = types.SimpleNamespace(model="gone", device="d", label="c", native=None, resolution=(640, 480),
                                 visible=True, flip_h=False, flip_v=False, brightness=0, contrast=0,
-                                saturation=0, rotation=0)
+                                saturation=0, rotation=0, max_fps=0)
     panel.set_camera(cam)
     combo = panel.model_combo
     assert combo.currentData() == "gone" and "missing" in combo.currentText()

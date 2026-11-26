@@ -10,7 +10,8 @@ from PyQt5.QtWidgets import (QAction, QCheckBox, QComboBox, QDockWidget, QFileDi
                              QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QProgressBar,
                              QScrollArea, QSizePolicy, QToolBar, QToolButton, QWidget)
 
-from camera import Camera, clamp, fits, list_cameras
+import camera as camera_module
+from camera import UNAVAILABLE, Camera, clamp, fits, list_cameras, ping_text
 from dialogs import CameraPanel, CaptureSettingsDialog, fill_resolutions
 from imaging import best_grid, compose_grid, draw_label, fit_size, resize, safe_name
 from recorder import RenderJob, Timelapse, VideoRecorder, save_async
@@ -38,6 +39,7 @@ DEFAULTS = {
     "video_duration": 0,
     "video_segment_minutes": 10,
     "models": [],  # vision model library: [{"name", "file", "classes", "threshold"}], replaced, never mutated
+    "stream_urls": [],  # network cameras, next to the USB ones (camera.STREAM_URLS)
 }
 ACCENT = QColor(53, 132, 228)
 BOX_COLORS = [QColor(80, 220, 100), QColor(255, 160, 40), QColor(60, 200, 230), QColor(240, 220, 60),
@@ -108,6 +110,7 @@ class CamFeedWidget(QWidget):
         self.camera, self.main = camera, main
         self._shown = None
         self.opened = (0, None)  # camera.opened as seen by the last sync_cameras
+        self.lost = False  # network stream reported unavailable, until its frames come back
         self.setMinimumSize(160, 120)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -117,7 +120,7 @@ class CamFeedWidget(QWidget):
         """Repaint only when something visible changed (new frame, status, name...)."""
         c = self.camera
         key = (c.frame_id, c.status, c.label, self.main.recording(c), self.main.selected is c,
-               c.model, id(c.detections), c.det_status)  # id: comparing numpy arrays raises
+               c.model, id(c.detections), c.det_status, ping_text(c.ping))  # id: comparing numpy arrays raises
         if key != self._shown:
             self._shown, self._shown_dets = key, c.detections  # keep it alive so its id is not reused
             self.update()
@@ -161,6 +164,8 @@ class CamFeedWidget(QWidget):
                         f"{size} · downscaled · {c.fps:.0f} fps"
                 else:
                     info = f"{size}{' · native' if tag else ''} · {c.fps:.0f} fps"
+            if c.ping is not None:  # a network camera: also shown while its stream is down
+                info = f"{info} · {ping_text(c.ping)}" if info else ping_text(c.ping)
             info_w = p.fontMetrics().horizontalAdvance(info) + 10
             p.setPen(QColor(170, 170, 175))
             p.drawText(QRect(0, h - bar, w - 10, bar), Qt.AlignVCenter | Qt.AlignRight, info)
@@ -259,6 +264,7 @@ class CamFluxWidget(QMainWindow):
         except Exception as e:
             print_error(f"Ignoring unreadable config {CONFIG_PATH}: {e}")
             self.cfg, cams = dict(DEFAULTS), []
+        camera_module.STREAM_URLS = self.cfg["stream_urls"]
         self._store_camera_settings(cams)
         self._present = None  # camera list seen by the last sync_cameras
 
@@ -544,6 +550,12 @@ class CamFluxWidget(QMainWindow):
                 if opened != feed.opened and (changed or opened[1] != index):
                     cam.reopen(cam.resolution)
                 feed.opened = opened
+                status = cam.status
+                if status == UNAVAILABLE and not feed.lost or status == "" and feed.lost:
+                    feed.lost = not feed.lost
+                    message = f"{'Stream lost' if feed.lost else 'Stream back'}: {cam.label}"
+                    (print_warning if feed.lost else print_success)(message)
+                    self.statusBar().showMessage(message, 6000)
             else:
                 self.add_camera(dev, desc, index, qt_name)
                 added = True
@@ -565,7 +577,9 @@ class CamFluxWidget(QMainWindow):
         if any(f.camera.label == cam.label for f in self.feeds.values()):
             cam.label = f"{description} ({len(self.feeds) + 1})"
         # qt_name: the id used before 2.2 (Qt device name), so settings saved under it carry over to the port once
+        # "host:" + device: back from a VisionHost, the port's settings were last saved under its host id
         saved = (self.saved_cams.pop(device, None) or self.saved_cams.pop(qt_name, None)
+                 or self.saved_cams.pop("host:" + device, None)
                  or (self.legacy_cams.pop(0) if self.legacy_cams else None))
         if saved:
             cam.apply_settings(saved)
@@ -691,6 +705,13 @@ class CamFluxWidget(QMainWindow):
             cam.reopen(tuple(res))
             print_info(f"{cam.label}: resolution set to {res[0]}x{res[1]}")
             QTimer.singleShot(2000, self.update_grid_layout)
+
+    def set_camera_fps(self, cam, fps):
+        """Frame rate a stream mirror sends for this camera, 0 = every frame. Reopens its stream."""
+        if fps != cam.max_fps:
+            cam.max_fps = fps
+            cam.reopen(cam.resolution)
+            print_info(f"{cam.label}: frame rate set to {fps or 'max'}{' fps' if fps else ''}")
 
     def set_keep_aspect(self, on):
         self.cfg["keep_aspect_ratio"] = on
@@ -818,6 +839,9 @@ class CamFluxWidget(QMainWindow):
                     self.set_camera_model(f.camera, None)
             self.panel.refresh_models()
             self.save_config()
+            if camera_module.STREAM_URLS != self.cfg["stream_urls"]:  # network cameras come and go, USB ones stay
+                camera_module.STREAM_URLS = self.cfg["stream_urls"]
+                self.sync_cameras()
             for f in self.feeds.values():
                 f.update()
 

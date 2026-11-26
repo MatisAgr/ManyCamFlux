@@ -1,10 +1,14 @@
 """Camera discovery and per-camera capture threads."""
 import ctypes
+import json
 import math
 import re
+import socket
 import sys
 import threading
 import time
+import urllib.parse
+import urllib.request
 import uuid
 
 import cv2
@@ -53,6 +57,11 @@ def resolution_choices(native, current):
 
 
 SIMULATED = 0  # number of synthetic cameras added to the real ones (--simulate N); can change at runtime
+# Network cameras (cfg["stream_urls"]), next to the USB ones. Each URL is a stream FFmpeg reads (MJPEG over HTTP,
+# RTSP, HLS...) or, ending in /cams, a stream mirror's camera list (a VisionHost) adding all its cameras.
+STREAM_URLS = []
+UNAVAILABLE = "Stream unavailable"  # status of a network camera that does not answer
+_mirrors = {}  # mirror list URL -> its last camera list
 
 
 class _DevPropKey(ctypes.Structure):
@@ -85,19 +94,58 @@ def usb_port(qt_name):
 
 def port_label(device):
     """'4', or '4.2' behind a hub, for a port-identified camera; '' otherwise."""
-    return ".".join(re.findall(r"#USB\((\d+)\)", device)) if device.startswith("usb:") else ""
+    return ".".join(re.findall(r"#USB\((\d+)\)", device)) if device.removeprefix("host:").startswith("usb:") else ""
+
+
+def source_label(device):
+    """Where a camera comes from, for the camera table: its USB port, a stream mirror, or its stream URL."""
+    port = port_label(device)
+    if device.startswith("host:"):
+        return f"mirror · USB {port}" if port else "mirror"
+    return port or (device if "://" in device else "")
+
+
+def ping_text(ms):
+    """'ping 12 ms', 'ping <1 ms' (same PC), '' if unknown."""
+    return "" if ms is None else "ping <1 ms" if ms < 1 else f"ping {ms:.0f} ms"
+
+
+def mirror_cameras(url):
+    """A stream mirror's cameras (e.g. a VisionHost's http://127.0.0.1:8090/cams) as list_cameras() entries:
+    ('host:<its id>', name, stream URL, its id). Its id is 'usb:<port>' like ours: settings saved when the camera
+    was plugged here carry over, and that local camera is left to the mirror. While the mirror does not answer,
+    its last list is kept: the feeds show UNAVAILABLE instead of vanishing."""
+    try:
+        # shortcut: runs on the GUI thread every 2 s; a hung mirror costs a 0.5 s freeze per sync (refused = instant)
+        with urllib.request.urlopen(url, timeout=0.5) as reply:
+            _mirrors[url] = [(f"host:{c['Id']}", c["Name"],
+                              urllib.parse.urljoin(url, c.get("Stream") or f"/cam/{c['Number']}.mjpg"), c["Id"])
+                             for c in json.load(reply)]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    return _mirrors.get(url, [])
 
 
 def list_cameras():
     """Connected cameras as [(device_id, description, opencv_index, qt_name)]. Cheap: safe to poll.
-    A USB camera on Windows is identified by its port ('usb:<location path>'), else by its Qt device name."""
+    A USB camera on Windows is identified by its port ('usb:<location path>'), else by its Qt device name.
+    A network camera's 'index' is its stream URL (what cv2.VideoCapture opens)."""
+    net = []
+    for url in STREAM_URLS:
+        if url.rstrip("/").endswith("/cams"):
+            net += mirror_cameras(url)
+        else:
+            net.append((url, urllib.parse.urlsplit(url).netloc or url, url, url))
+    mirrored = {qt_name for dev, _, _, qt_name in net if dev.startswith("host:")}
     cams = []
     for pos, info in enumerate(QCameraInfo.availableCameras()):
         name = info.deviceName()
         port = usb_port(name)
         m = re.search(r"/dev/video(\d+)$", name)  # Linux: the index is in the device path
-        cams.append((f"usb:{port}" if port else name, info.description(), int(m.group(1)) if m else pos, name))
-    return cams + [(f"sim:{i}", f"Simulated {i + 1}", i, f"sim:{i}") for i in range(SIMULATED)]
+        dev = f"usb:{port}" if port else name
+        if dev not in mirrored:  # a mirror owns it: opening it here would take it from the mirror
+            cams.append((dev, info.description(), int(m.group(1)) if m else pos, name))
+    return cams + net + [(f"sim:{i}", f"Simulated {i + 1}", i, f"sim:{i}") for i in range(SIMULATED)]
 
 
 class SimulatedCapture:
@@ -139,11 +187,27 @@ class SimulatedCapture:
         return True, frame
 
 
-def open_capture(device, index, resolution, probe=False):
+# Frame rate a stream mirror sends (Camera.max_fps): 0 = "Max", every frame of the stream (the camera's rate)
+FPS_CHOICES = [(0, "Max (every frame)"), (15, "15 fps"), (10, "10 fps"), (5, "5 fps"), (2, "2 fps"), (1, "1 fps")]
+
+
+def open_capture(device, index, resolution, probe=False, max_fps=0):
     """(capture or None, native resolution or None). probe=True also asks the camera for its largest
-    mode first (~0.5-1.3 s with DirectShow, measured without fps impact), done once per camera."""
+    mode first (~0.5-1.3 s with DirectShow, measured without fps impact), done once per camera.
+    max_fps: frames per second a stream mirror sends, 0 = all."""
     if device.startswith("sim:"):
         return SimulatedCapture(index, resolution), SimulatedCapture.NATIVE
+    if isinstance(index, str):  # a network stream URL: camera settings are the sender's
+        if device.startswith("host:"):  # a mirror scales and thins its stream as asked (its capture keeps full size/rate)
+            index = f"{index}{'&' if '?' in index else '?'}w={resolution[0]}&h={resolution[1]}"
+            if max_fps:
+                index += f"&fps={max_fps}"
+        cap = cv2.VideoCapture(index, cv2.CAP_FFMPEG,
+                               [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 3000])
+        if cap.isOpened():
+            return cap, None
+        cap.release()
+        return None, None
     mjpg = cv2.VideoWriter_fourcc(*"MJPG")
     if not probe:  # size and MJPG given at open: one camera start instead of three (measured 1.45 -> 0.36 s)
         cap = cv2.VideoCapture(index, BACKEND, [cv2.CAP_PROP_FRAME_WIDTH, resolution[0],
@@ -193,6 +257,7 @@ class Camera(threading.Thread):
         self.keep_aspect = True
         self.display_size = (640, 360)  # device pixels of the widget showing this camera
         self.model = None  # vision model name (library entry) or None
+        self.max_fps = 0  # stream mirror camera: frames per second it sends (FPS_CHOICES), 0 = all
         # output (written by this thread)
         self.frame = None    # latest processed full-resolution BGR frame
         self.preview = None  # (QImage, backing ndarray) sized for display_size
@@ -200,6 +265,7 @@ class Camera(threading.Thread):
         self.fps = 0.0
         self.native = None  # largest resolution the camera supports, once probed
         self.status = "Connecting…"
+        self.ping = None  # network camera: ms to connect to its server, None if unknown or unreachable
         self.opened = (0, None)  # (successful opens, index used by the last one), checked by sync_cameras
         # vision output (written by its vision.ModelWorker)
         self.detections = None  # (xyxy, scores, names) of the last analysed frame
@@ -213,6 +279,7 @@ class Camera(threading.Thread):
                 "contrast": self.contrast, "saturation": self.saturation,
                 "rotation_angle": self.rotation, "flip_horizontal": self.flip_h,
                 "flip_vertical": self.flip_v, "visible": self.visible, "resolution": list(self.resolution), "model": self.model,
+                "max_fps": self.max_fps,
                 # the probe costs ~0.6 s per open: keep its result, for this camera model only
                 "native": list(self.native) if self.native else None, "native_of": self.description}
 
@@ -226,6 +293,7 @@ class Camera(threading.Thread):
         self.flip_v = bool(s.get("flip_vertical", False))
         self.visible = bool(s.get("visible", True))
         self.model = s["model"] if isinstance(s.get("model"), str) else None
+        self.max_fps = s["max_fps"] if s.get("max_fps") in [v for v, _ in FPS_CHOICES] else 0
         if isinstance(s.get("resolution"), list) and len(s["resolution"]) == 2:
             self.resolution = tuple(int(v) for v in s["resolution"])
         native = s.get("native")
@@ -238,6 +306,19 @@ class Camera(threading.Thread):
             return ""
         got, best = sorted(frame.shape[:2]), sorted(self.native[::-1])
         return "native" if all(g >= b for g, b in zip(got, best)) else "downscaled"
+
+    def _measure_ping(self):
+        """Every 2 s, the time to open a TCP connection to the stream's server: a ping without ICMP (admin rights)."""
+        while not self._halt.is_set():
+            try:
+                url = urllib.parse.urlsplit(self.index)  # read each time: a mirror may move the stream
+                port = url.port or {"https": 443, "rtsp": 554}.get(url.scheme, 80)
+                start = time.perf_counter()
+                socket.create_connection((url.hostname, port), timeout=2).close()
+                self.ping = (time.perf_counter() - start) * 1000
+            except (OSError, ValueError):
+                self.ping = None
+            self._halt.wait(2)
 
     def reopen(self, resolution):
         self.resolution = resolution
@@ -253,20 +334,26 @@ class Camera(threading.Thread):
                 del _held[self.opened[1]]
 
     def run(self):
-        cap, fails, last = None, 0, time.perf_counter()
-        real = not self.device.startswith("sim:")
+        cap, last = None, time.perf_counter()
+        frame_at = last  # last good frame, or the open
+        network = isinstance(self.index, str)
+        real = not network and not self.device.startswith("sim:")  # a local device: one DirectShow index holder at a time
+        if network:
+            threading.Thread(target=self._measure_ping, daemon=True).start()
         while not self._halt.is_set():
             if cap is not None and self._reopen:
                 self._close(cap)
                 cap = None
             if cap is None:
                 self._reopen = False
-                self.status = "Connecting…"
+                if self.status != UNAVAILABLE:  # a lost stream keeps saying so while it retries
+                    self.status = "Connecting…"
                 with _device_lock:
                     index = self.index
                     holder = _held.get(index) if real else None
                     if holder is None:
-                        cap, native = open_capture(self.device, index, self.resolution, probe=self.native is None)
+                        cap, native = open_capture(self.device, index, self.resolution, probe=self.native is None,
+                                                   max_fps=self.max_fps)
                         if cap is not None:
                             self.opened = (self.opened[0] + 1, index)
                             if real:
@@ -280,20 +367,21 @@ class Camera(threading.Thread):
                 if native and native[0] > 0:
                     self.native = native
                 if cap is None:
-                    self.status = "No signal"
+                    self.status = UNAVAILABLE if network else "No signal"
                     self._halt.wait(2)
                     continue
-                fails = 0
+                frame_at = time.perf_counter()
             ok, raw = cap.read()
             if not ok:
-                fails += 1
-                if fails >= 50:  # ~2.5 s without a frame: drop the handle and reopen
-                    self.status = "No signal"
+                # 2.5 s without a frame: drop the handle and reopen. Timed, not counted: a failed USB read returns
+                # at once, a network stream's waits its 3 s read timeout
+                if time.perf_counter() - frame_at >= 2.5:
+                    self.status = UNAVAILABLE if network else "No signal"
                     self._close(cap)
                     cap = None
                 self._halt.wait(0.05)
                 continue
-            fails = 0
+            frame_at = time.perf_counter()
             frame = adjust(raw, self.rotation, self.brightness, self.contrast, self.saturation,
                            self.flip_h, self.flip_v)
             now = time.perf_counter()
